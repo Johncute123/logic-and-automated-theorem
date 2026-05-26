@@ -32,7 +32,7 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .isabelle_api import start_isabelle_server, get_isabelle_client
+from .isabelle_api import start_isabelle_server, get_isabelle_client, session_id_from_start
 from .prover import prove_goal
 from . import config as CFG
 
@@ -218,7 +218,7 @@ def cmd_bench(args: argparse.Namespace) -> None:
     server_info, proc = start_isabelle_server(name="isabelle", log_file="logs/bench_server.log")
     print(server_info.strip())
     isabelle = get_isabelle_client(server_info)
-    session_id = isabelle.session_start(session="HOL")
+    session_id = session_id_from_start(isabelle.session_start(session="HOL"))
     print("session_id:", session_id)
 
     try:
@@ -395,7 +395,7 @@ def cmd_regress(args: argparse.Namespace) -> None:
     server_info, proc = start_isabelle_server(name="isabelle", log_file="logs/regress_server.log")
     print(server_info.strip())
     isabelle = get_isabelle_client(server_info)
-    session_id = isabelle.session_start(session="HOL")
+    session_id = session_id_from_start(isabelle.session_start(session="HOL"))
     print("session_id:", session_id)
 
     try:

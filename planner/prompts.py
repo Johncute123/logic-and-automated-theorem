@@ -164,9 +164,11 @@ HARD OUTPUT RULES
 - Use the right shell:
   • Induction: `proof (induction <var>)` → branches `case …` with `show ?case …`.
   • Exhaustive cases: `proof (cases <expr>)` or `proof (cases rule: <T>.exhaust)` → branches ending with `show ?thesis …`.
+  • Implication introduction: use `proof` (not `proof -`), then quote assumptions, e.g. `assume "A"`.
   • Calculational: `proof -` with `have …`, `also`, `moreover`, `finally show ?thesis …`.
 - When trivial, close with `by simp` / `by auto` / `by blast` / `by fastforce`, etc, but don't use . as a tactic. 
 - Do NOT invent constants or fact names; only use variables/tokens present in the goal or locally introduced facts.
+- Never write unquoted assumptions such as `assume A`; Isabelle propositions must be quoted: `assume "A"`.
 
 LIGHT GRAMMAR (allowed shapes)
 lemma "{goal}"
@@ -229,5 +231,12 @@ proof -
   have f2: "B = C"  using f1  sorry
   also have "... = D"  sorry
   finally show ?thesis  using f2  sorry
+qed
+
+lemma "{goal}"
+proof
+  assume "A"
+  then show "A"
+    sorry
 qed
 """

@@ -56,6 +56,7 @@ _HAVE_OR_SHOW    = re.compile(r"(?m)^\s*(have|show)\b")
 _INLINE_BY       = re.compile(r"\s+by\s+.+$")
 _CONTINUATION_HEAD = re.compile(r"(?m)^\s*(?:using|from|with|then|ultimately|finally|also|moreover)\b")
 _STMT_OR_BOUNDARY = re.compile(r"(?m)^\s*(?:have|show|assume|case|next|qed)\b")
+_UNQUOTED_ASSUME_RE = re.compile(r"^(?P<indent>\s*)assume(?:\s+(?P<label>[A-Za-z_][\w']*)\s*:)?\s+(?P<prop>[^\"].*?)\s*$")
 
 # =============================================================================
 # Provider shims: Ollama (default), Hugging Face ("hf:"), Gemini ("gemini:")
@@ -254,6 +255,95 @@ def _normalize_calculation_ellipsis(text: str) -> str:
     text = re.sub(r"\.\s*\.\s*\.", "...", text)
     return text
 
+def _normalize_prop_for_compare(prop: str) -> str:
+    text = (prop or "").strip()
+    text = text.replace("\\<longrightarrow>", "⟶").replace("-->", "⟶")
+    text = text.replace("\\<and>", "∧").replace("&", "∧")
+    while text.startswith("(") and text.endswith(")"):
+        inner = text[1:-1].strip()
+        depth = 0
+        balanced = True
+        for ch in inner:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth < 0:
+                    balanced = False
+                    break
+        if not balanced or depth != 0:
+            break
+        text = inner
+    return re.sub(r"\s+", " ", text)
+
+def _split_top_level_implication(prop: str) -> Optional[Tuple[str, str]]:
+    """Split A ⟶ B / A --> B only when the implication is at top level."""
+    text = _normalize_prop_for_compare(prop)
+    depth = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+            i += 1
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            i += 1
+            continue
+        if depth == 0 and text.startswith("⟶", i):
+            return text[:i].strip(), text[i + 1:].strip()
+        if depth == 0 and text.startswith("-->", i):
+            return text[:i].strip(), text[i + 3:].strip()
+        if depth == 0 and text.startswith("\\<longrightarrow>", i):
+            return text[:i].strip(), text[i + len("\\<longrightarrow>"):].strip()
+        i += 1
+    return None
+
+def _simple_implication_tautology(goal: str) -> bool:
+    parts = _split_top_level_implication(goal)
+    if not parts:
+        return False
+    left, right = parts
+    return _normalize_prop_for_compare(left) == _normalize_prop_for_compare(right)
+
+def _simple_tautology_proof(goal: str) -> str:
+    return f'lemma "{goal}"\n  by simp\n'
+
+def _quote_unquoted_assumes(text: str) -> str:
+    """Make `assume A` into `assume "A"`; Isabelle propositions must be quoted."""
+    out: List[str] = []
+    for line in text.splitlines():
+        m = _UNQUOTED_ASSUME_RE.match(line)
+        if not m:
+            out.append(line)
+            continue
+        prop = (m.group("prop") or "").strip()
+        if prop.startswith(("that ", "this ", "obtains ")):
+            out.append(line)
+            continue
+        label = m.group("label")
+        prefix = f'{m.group("indent")}assume '
+        if label:
+            prefix += f'{label}: '
+        out.append(f'{prefix}"{prop}"')
+    return "\n".join(out)
+
+def _fix_implication_proof_mode(text: str, goal: str) -> str:
+    """Avoid `proof -` for direct implication introduction outlines."""
+    if not _split_top_level_implication(goal):
+        return text
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if re.match(r"^\s*proof\s*-\s*$", line):
+            for later in lines[i + 1: min(len(lines), i + 6)]:
+                if re.match(r"^\s*assume\b", later):
+                    indent = line[:len(line) - len(line.lstrip(" "))]
+                    lines[i] = f"{indent}proof"
+                    return "\n".join(lines)
+            return text
+    return text
+
 def _crop_to_first_proof_block(text: str) -> str:
     """
     Keep only the first lemma..(proof..qed)* block; be nesting-aware so the cropped
@@ -410,6 +500,9 @@ def _maybe_proof_dash(text: str) -> str:
     return text
 
 def _sanitize_outline(text: str, goal: str, *, force_outline: bool) -> str:
+    if not force_outline and _simple_implication_tautology(goal):
+        return _simple_tautology_proof(goal)
+
     text = _ensure_lemma_header(text, goal)
     # Normalize ellipsis first (avoid Unicode / spaced form)
     text = _normalize_calculation_ellipsis(text)
@@ -444,12 +537,18 @@ def _sanitize_outline(text: str, goal: str, *, force_outline: bool) -> str:
                 text = text[:insert_at] + "  sorry\n" + text[insert_at:]
 
     # Light Isar fixups (order matters)
-    #  1) Flip only the meta after 'show', preserving 'then/using/from/with/finally' etc.
-    #  2) Ensure every 'have/show' has a body; insert 'sorry' if missing to trigger fill/repair.
-    #  3) Prefer 'proof -' when calculational cues are present.
+    #  1) Quote unsafe `assume A` statements before Isabelle sees them.
+    #  2) Use implication-introduction `proof`, not `proof -`, for implication goals.
+    #  3) Flip only the meta after 'show', preserving 'then/using/from/with/finally' etc.
+    #  4) Ensure every 'have/show' has a body; insert 'sorry' if missing to trigger fill/repair.
+    #  5) Prefer 'proof -' when calculational cues are present, except for implication intros.
+    text = _quote_unquoted_assumes(text)
+    text = _fix_implication_proof_mode(text, goal)
     text = _normalize_show_kinds(text)
     text = _ensure_have_show_bodies(text)
     text = _maybe_proof_dash(text)
+    text = _fix_implication_proof_mode(text, goal)
+    text = _quote_unquoted_assumes(text)
 
     # Trim to the first complete lemma..qed block to avoid trailing splices
     text = _crop_to_first_proof_block(text)

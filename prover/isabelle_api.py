@@ -73,7 +73,7 @@ def _normalize_type(rt: Any) -> str:
 
 
 def _decode_body_to_dict(body: Any) -> Optional[Dict[str, Any]]:
-    """Body may be dict/JSON string/bytes; return dict or None."""
+    """Body may be dict / JSON string / bytes / Pydantic model; return dict or None."""
     if body is None:
         return None
     if isinstance(body, (bytes, bytearray)):
@@ -83,10 +83,93 @@ def _decode_body_to_dict(body: Any) -> Optional[Dict[str, Any]]:
             body = str(body)
     if isinstance(body, dict):
         return body
+    # isabelle-client (Pydantic) often passes response_body as a model, not dict/json.
+    try:
+        md = getattr(body, "model_dump", None)
+        if callable(md):
+            d = md()
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    try:
+        d1 = getattr(body, "dict", None)
+        if callable(d1):
+            d = d1()
+            if isinstance(d, dict):
+                return d
+    except Exception:
+        pass
+    if isinstance(body, str):
+        try:
+            return json.loads(body)
+        except Exception:
+            return None
     try:
         return json.loads(body)
     except Exception:
         return None
+
+
+def _session_id_from_body(body: Any) -> Optional[str]:
+    """Best-effort ``session_id`` from a FINISHED/session-start body (model or dict)."""
+    if body is None:
+        return None
+    if isinstance(body, dict):
+        v = body.get("session_id")
+        return v.strip() if isinstance(v, str) and v.strip() else None
+    sid = getattr(body, "session_id", None)
+    if isinstance(sid, str) and sid.strip():
+        return sid.strip()
+    # Some client builds expose only model_dump()
+    try:
+        if hasattr(body, "model_dump"):
+            d = body.model_dump()
+            if isinstance(d, dict):
+                v2 = d.get("session_id")
+                if isinstance(v2, str) and v2.strip():
+                    return v2.strip()
+    except Exception:
+        pass
+    return None
+
+
+def session_id_from_start(responses: List[Any]) -> str:
+    """
+    Extract the UUID ``session_id`` from ``IsabelleClient.session_start(...)``.
+
+    The client returns a list (TaskOK, notifications, …, SessionStartRegularResponse);
+    callers must not pass the raw list to ``use_theories``.
+    """
+    if not responses:
+        raise RuntimeError("session_start returned no responses")
+    for r in reversed(responses):
+        body = getattr(r, "response_body", None)
+        sid = _session_id_from_body(body)
+        if sid:
+            return sid
+    raise RuntimeError(
+        f"Could not extract session_id from session_start ({len(responses)} response(s))"
+    )
+
+
+def normalize_session_id(session_id: Any) -> str:
+    """Coerce ``session_start`` output (list or response object) or a plain string."""
+    if isinstance(session_id, str):
+        s = session_id.strip()
+        if not s:
+            raise ValueError("session_id is an empty string")
+        return s
+    if isinstance(session_id, (list, tuple)):
+        return session_id_from_start(list(session_id))
+    body = getattr(session_id, "response_body", None)
+    sid = _session_id_from_body(body)
+    if sid:
+        return sid
+    raise TypeError(
+        "session_id must be a non-empty str, the list from session_start(...), "
+        f"or a FINISHED response with .response_body.session_id; got {type(session_id).__name__}"
+    )
 
 
 # ------------------ Public utils ------------------
@@ -123,8 +206,11 @@ def build_theory(steps: List[str], add_print_state: bool, end_with: Optional[str
     return textwrap.dedent(_header() + "\n".join(body) + "\n\n" + FOOTER)
 
 
-def _use_theories_call(isabelle, *, session_id: str, master_dir: str, timeout_s: Optional[int] = None) -> List[IsabelleResponse]:
+def _use_theories_call(isabelle, *, session_id: Any, master_dir: str, timeout_s: Optional[int] = None) -> List[IsabelleResponse]:
     """Internal: best-effort pass through native timeout kwargs (if supported)."""
+    sid = normalize_session_id(session_id)
+    # Always use keyword names (session_id, theories) so this works across client versions
+    # that reorder parameters.
     if timeout_s is not None and int(timeout_s or 0) > 0:
         # Try native timeout kwarg spellings first (best-effort). Some clients ignore these,
         # so the caller still enforces a wall-clock timeout via Future.result(...).
@@ -132,19 +218,17 @@ def _use_theories_call(isabelle, *, session_id: str, master_dir: str, timeout_s:
             try:
                 return list(
                     isabelle.use_theories(
-                        theories=["Scratch"], session_id=session_id, master_dir=master_dir, **{kw: int(timeout_s)}
+                        session_id=sid, theories=["Scratch"], master_dir=master_dir, **{kw: int(timeout_s)}
                     )
                 )
             except TypeError:
                 continue
-            except Exception:
-                return []
-    return list(isabelle.use_theories(theories=["Scratch"], session_id=session_id, master_dir=master_dir))
+    return list(isabelle.use_theories(session_id=sid, theories=["Scratch"], master_dir=master_dir))
 
 
 def run_theory(
     isabelle,
-    session_id: str,
+    session_id: Any,
     theory_text: str,
     timeout_s: Optional[int] = None,
 ) -> List[IsabelleResponse]:
@@ -162,6 +246,7 @@ def run_theory(
     global _use_calls, _last_call_timed_out
     _use_calls += 1
     _last_call_timed_out = False
+    sid = normalize_session_id(session_id)
 
     tmpdir = tempfile.TemporaryDirectory()
     try:
@@ -180,7 +265,7 @@ def run_theory(
         if timeout_s > 0:
             # Always enforce a wall-clock timeout (even if native timeouts exist but are ignored).
             with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_use_theories_call, isabelle, session_id=session_id, master_dir=tmpdir.name, timeout_s=timeout_s)
+                fut = ex.submit(_use_theories_call, isabelle, session_id=sid, master_dir=tmpdir.name, timeout_s=timeout_s)
                 try:
                     return fut.result(timeout=timeout_s)
                 except FuturesTimeout:
@@ -190,7 +275,7 @@ def run_theory(
                     return []
 
         # No timeout requested → direct call
-        return list(isabelle.use_theories(theories=["Scratch"], session_id=session_id, master_dir=tmpdir.name))
+        return list(isabelle.use_theories(session_id=sid, theories=["Scratch"], master_dir=tmpdir.name))
     finally:
         tmpdir.cleanup()
 

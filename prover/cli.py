@@ -21,7 +21,7 @@ from .config import (
     VARIANTS_DEFAULT,
 )
 from .prover import prove_goal
-from .isabelle_api import start_isabelle_server, get_isabelle_client
+from .isabelle_api import start_isabelle_server, get_isabelle_client, session_id_from_start
 from .tactics import mine_two_step_macros
 
 # --- add near top of prover/cli.py (after imports) ---
@@ -235,7 +235,7 @@ def main():
         server_info, proc = start_isabelle_server(name="isabelle", log_file="server.log")
         print(server_info.strip())
         isabelle = get_isabelle_client(server_info)
-        session_id = isabelle.session_start(session="HOL")
+        session_id = session_id_from_start(isabelle.session_start(session="HOL"))
         print("session_id:", session_id)
 
         # Mine macros from existing logs (fast; skips if file missing)

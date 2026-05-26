@@ -14,7 +14,11 @@ from planner.skeleton import (
 from planner.repair import try_cegis_repairs, regenerate_whole_proof, _APPLY_OR_BY as _TACTIC_LINE_RE
 from prover.config import ISABELLE_SESSION
 from prover.isabelle_api import (
-    build_theory, get_isabelle_client, last_print_state_block, start_isabelle_server,
+    build_theory,
+    get_isabelle_client,
+    last_print_state_block,
+    session_id_from_start,
+    start_isabelle_server,
 )
 from prover.prover import prove_goal
 from planner.goals import _print_state_before_hole, _log_state_block, _effective_goal_from_state, _first_lemma_line, _extract_goal_from_lemma_line, _cleanup_resources, _verify_full_proof, _run_theory_with_timeout
@@ -218,7 +222,8 @@ def _tactic_spans_topdown(text: str) -> List[Tuple[int, int]]:
     return spans
 
 def _repair_failed_proof_topdown(isa, session, full: str, goal_text: str, model: Optional[str],
-                                 left_s, max_repairs_per_hole: int, trace: bool) -> Tuple[str, bool]:
+                                 left_s, max_repairs_per_hole: int, beam_k: int,
+                                 trace: bool) -> Tuple[str, bool]:
     """Walk tactics from top; attempt CEGIS-repair on the first failing one.
 
     This must never crash the UI route. Timeouts / broken Isabelle responses are treated as
@@ -246,7 +251,7 @@ def _repair_failed_proof_topdown(isa, session, full: str, goal_text: str, model:
             patched, applied, _ = try_cegis_repairs(
                 full_text=full, hole_span=span, goal_text=eff_goal, model=model,
                 isabelle=isa, session=session, repair_budget_s=per_budget,
-                max_ops_to_try=max_repairs_per_hole, beam_k=2,
+                max_ops_to_try=max_repairs_per_hole, beam_k=beam_k,
                 allow_whole_fallback=False, trace=trace, resume_stage=0,
             )
         except (TimeoutError, _FuturesTimeout, ValueError) as ex:
@@ -261,7 +266,7 @@ def _repair_failed_proof_topdown(isa, session, full: str, goal_text: str, model:
 
         if applied and patched != full:
             if _verify_full_proof(isa, session, patched):
-                return patched, True
+                return patched, "sorry" not in patched
 
             # Partial progress: keep it, then try to open the failing spot into a 'sorry'
             if trace:
@@ -402,8 +407,8 @@ def plan_outline(goal: str, *, model: Optional[str] = None, outline_k: Optional[
     """Generate Isar outline with 'sorry' placeholders."""
     server_info, proc = start_isabelle_server(name="planner", log_file="logs/planner_ui.log")
     isa = get_isabelle_client(server_info)
-    session = isa.session_start(session=ISABELLE_SESSION)
-    
+    session = session_id_from_start(isa.session_start(session=ISABELLE_SESSION))
+
     try:
         if legacy_single_outline:
             return propose_isar_skeleton(goal, model=model, temp=0.35, force_outline=True).text
@@ -428,7 +433,8 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
                  priors_path: Optional[str] = None, context_hints: bool = False,
                  lib_templates: bool = False, alpha: float = 1.0, beta: float = 0.5,
                  gamma: float = 0.2, hintlex_path: Optional[str] = None,
-                 hintlex_top: int = 8) -> PlanAndFillResult:
+                 hintlex_top: int = 8, beam_k: int = 2,
+                 whole_fallback: bool = True) -> PlanAndFillResult:
     """Plan and fill holes in Isar proofs.
 
     Notes:
@@ -441,7 +447,7 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
 
     server_info, proc = start_isabelle_server(name="planner", log_file="logs/planner_ui.log")
     isa = get_isabelle_client(server_info)
-    session = isa.session_start(session=ISABELLE_SESSION)
+    session = session_id_from_start(isa.session_start(session=ISABELLE_SESSION))
 
     t0 = time.monotonic()
     left_s = lambda: max(0.0, timeout - (time.monotonic() - t0))
@@ -464,7 +470,7 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
             pass
         server_info2, proc2 = start_isabelle_server(name="planner", log_file="logs/planner_ui.log")
         isa2 = get_isabelle_client(server_info2)
-        session2 = isa2.session_start(session=ISABELLE_SESSION)
+        session2 = session_id_from_start(isa2.session_start(session=ISABELLE_SESSION))
         isa, session, proc = isa2, session2, proc2
 
     try:
@@ -497,13 +503,23 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
                 _restart_isabelle("verify_full_proof", ex)
 
             if repairs and left_s() > 6.0:
-                full, ok = _repair_failed_proof_topdown(isa, session, full, goal, model, left_s, max_repairs_per_hole, trace)
+                full, ok = _repair_failed_proof_topdown(
+                    isa, session, full, goal, model, left_s,
+                    max_repairs_per_hole, beam_k, trace
+                )
                 if ok:
                     return PlanAndFillResult(True, full, [], [])
+                if "sorry" in full:
+                    spans = find_sorry_spans(full)
+                    if spans:
+                        if trace:
+                            print("[planner] Top-down repair introduced holes; continuing with fill loop.")
+                    else:
+                        return PlanAndFillResult(False, full, [], [0])
 
             full2, opened = _open_minimal_sorries(isa, session, full)
             full = full2 if opened else full
-            if not opened:
+            if not opened and "sorry" not in full:
                 return PlanAndFillResult(False, full, [], [0])
 
         # Fill holes
@@ -612,7 +628,7 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
                         full_text=full, hole_span=span, goal_text=eff_goal, model=model,
                         isabelle=isa, session=session,
                         repair_budget_s=min(30.0, max(15.0, left_s() * 0.33)),
-                        max_ops_to_try=max_repairs_per_hole, beam_k=2,
+                        max_ops_to_try=max_repairs_per_hole, beam_k=beam_k,
                         allow_whole_fallback=False, trace=trace, resume_stage=current_stage,
                     )
                 except (TimeoutError, _FuturesTimeout, ValueError) as ex:
@@ -658,6 +674,11 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
                             repair_progress[hole_key] = 2
                             focused_hole_key = hole_key
                             continue
+                        elif not whole_fallback:
+                            if trace:
+                                print("[repair] Whole-proof fallback disabled; stopping at stage 2 failure.")
+                            failed.append(spans.index(span))
+                            break
                         else:
                             regen_budget = min(40.0, max(8.0, left_s() * 0.8))
                             try:
@@ -721,6 +742,51 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
                     repair_progress[hole_key] = min(start_stage + 1, 2)
                     focused_hole_key = hole_key
                 else:
+                    if stage_tries[key] >= 3:
+                        if not whole_fallback:
+                            if trace:
+                                print("[repair] Whole-proof fallback disabled after repeated stage 2 no-help.")
+                            failed.append(spans.index(span))
+                            break
+
+                        regen_budget = min(40.0, max(8.0, left_s() * 0.8))
+                        try:
+                            new_full, ok_re, _ = regenerate_whole_proof(
+                                full_text=full, goal_text=goal_text, model=model,
+                                isabelle=isa, session=session, budget_s=regen_budget,
+                                trace=trace, prior_outline_text=full
+                            )
+                        except (TimeoutError, _FuturesTimeout, ValueError) as ex:
+                            _restart_isabelle("regenerate_whole_proof_nohelp", ex)
+                            new_full, ok_re = full, False
+                        except Exception as ex:
+                            if trace:
+                                print(f"[repair] regenerate_whole_proof crashed: {type(ex).__name__}: {ex}")
+                            new_full, ok_re = full, False
+
+                        if ok_re and new_full != full:
+                            full = new_full
+                            repair_progress.clear()
+                            stage_tries.clear()
+                            focused_hole_key = None
+                            continue
+
+                        if trace:
+                            print("[repair] Whole regeneration gave no help; proposing a fresh outline...")
+                        temps = tuple(outline_temps) if outline_temps else (0.35, 0.55, 0.85)
+                        k = int(outline_k) if outline_k is not None else 3
+                        best, _ = propose_isar_skeleton_diverse_best(
+                            goal_text, isabelle=isa, session_id=session, model=model, temps=temps, k=k,
+                            force_outline=True, priors_path=priors_path, context_hints=context_hints,
+                            lib_templates=lib_templates, alpha=alpha, beta=beta, gamma=gamma,
+                            hintlex_path=hintlex_path, hintlex_top=hintlex_top,
+                        )
+                        full = best.text
+                        repair_progress.clear()
+                        stage_tries.clear()
+                        focused_hole_key = None
+                        continue
+
                     repair_progress[hole_key] = 2
                     focused_hole_key = hole_key
 

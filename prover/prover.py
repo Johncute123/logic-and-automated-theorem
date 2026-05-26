@@ -37,6 +37,16 @@ _result_cache: Dict[Tuple[Tuple[str, ...], str], Tuple[bool, Optional[int], str]
 _GLOBAL_CACHE_MAX = int(os.getenv("GLOBAL_STEP_CACHE_MAX", "8192"))
 _global_result_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
 
+# When there is no print_state yet (lemma only), try these before LLM-ranked finishers.
+# Stabilizes easy HOL goals (e.g. list simp) without relying on model sampling.
+_BOOTSTRAP_FINISHERS: Tuple[str, ...] = (
+    "by simp",
+    "by auto",
+    "by fastforce",
+    "by blast",
+    "by clarsimp",
+)
+
 _GOAL_LINE = re.compile(r'lemma\s+"(.*)"')
 
 def _global_cache_key(steps: List[str], cand: str) -> tuple:
@@ -139,8 +149,10 @@ def prove_goal(isabelle, session_id: str, goal: str, model_name_or_ensemble: str
     if enable_reranker and os.environ.get("RERANKER_OFF", "0") not in ("1", "true", "True"):
         reranker = Reranker()
 
-    global _result_cache
+    global _result_cache, _global_result_cache
     _result_cache = {}
+    # Fresh step cache per goal avoids carrying failed/timeout step results across goals in one process.
+    _global_result_cache.clear()
 
     # Resolve models robustly (planner may pass model=None)
     if models:
@@ -313,15 +325,21 @@ def prove_goal(isabelle, session_id: str, goal: str, model_name_or_ensemble: str
 
             # Build finishers with explicit origin tags so we can print who proposed what.
             finishers_with_origin: List[Tuple[str, str]] = []
-            # sledge proposals get priority (only for the first beam entry as before)
+            seen_fin: set[str] = set()
+            if not (state_hint or "").strip():
+                for b in _BOOTSTRAP_FINISHERS:
+                    if b not in seen_fin:
+                        finishers_with_origin.append((b, "bootstrap"))
+                        seen_fin.add(b)
             if j == 0 and sledge_sugs:
                 for s in sledge_sugs:
-                    if s not in [f for f, _ in finishers_with_origin]:
+                    if s not in seen_fin:
                         finishers_with_origin.append((s, "sledge"))
-            # LLm finishers (only add if not already present)
+                        seen_fin.add(s)
             for f in finishers_llm:
-                if f not in [ff for ff, _ in finishers_with_origin]:
+                if f not in seen_fin:
                     finishers_with_origin.append((f, "llm"))
+                    seen_fin.add(f)
 
             if trace and finishers_with_origin:
                 pretty = ", ".join([f"{o}:{fin}" for fin, o in finishers_with_origin])

@@ -6,7 +6,7 @@ from typing import Optional, List
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from prover.isabelle_api import start_isabelle_server, get_isabelle_client
+from prover.isabelle_api import start_isabelle_server, get_isabelle_client, session_id_from_start
 from prover.prover import prove_goal
 from prover.config import MODEL as DEFAULT_MODEL
 from planner.driver import plan_and_fill
@@ -46,7 +46,7 @@ print(f"[server] LLM_DEBUG={'ON' if os.getenv('LLM_DEBUG') not in (None, '', '0'
 # ----------------------------
 server_info, proc = start_isabelle_server(name="isabelle", log_file="ui_server.log")
 isabelle = get_isabelle_client(server_info)
-SESSION = isabelle.session_start(session="HOL")
+SESSION = session_id_from_start(isabelle.session_start(session="HOL"))
 
 @atexit.register
 def _shutdown():

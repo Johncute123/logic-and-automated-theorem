@@ -619,7 +619,8 @@ def try_cegis_repairs(*, full_text: str, hole_span: Tuple[int, int], goal_text: 
             print("[repair] Trying have/show block repair…")
         current_text = _repair_block(current_text, lines, hs_s, hs_e, goal_text, state0, 
                                      isabelle, session, model, left, trace, "have-show", 
-                                     stage=1, prior_store=prior_store)
+                                     stage=1, prior_store=prior_store,
+                                     max_attempts=max_ops_to_try, beam_k=beam_k)
         if current_text != full_text:
             thy = build_theory(current_text.splitlines(), add_print_state=False, end_with=None)
             ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
@@ -636,7 +637,8 @@ def try_cegis_repairs(*, full_text: str, hole_span: Tuple[int, int], goal_text: 
         if trace:
             print("[repair] Trying case-block repair…")
         current_text = _repair_block(current_text, lines, cs, ce, goal_text, state0, isabelle, session, 
-                                     model, left, trace, "case", stage=2, prior_store=prior_store)
+                                     model, left, trace, "case", stage=2, prior_store=prior_store,
+                                     max_attempts=max_ops_to_try, beam_k=beam_k)
         if current_text != full_text:
             thy = build_theory(current_text.splitlines(), add_print_state=False, end_with=None)
             ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
@@ -651,7 +653,8 @@ def try_cegis_repairs(*, full_text: str, hole_span: Tuple[int, int], goal_text: 
         if trace:
             print("[repair] Trying subproof repair…")
         current_text = _repair_block(current_text, lines, ps, pe, goal_text, state0, isabelle, session, 
-                                     model, left, trace, "subproof", stage=2, prior_store=prior_store)
+                                     model, left, trace, "subproof", stage=2, prior_store=prior_store,
+                                     max_attempts=max_ops_to_try, beam_k=beam_k)
         if current_text != full_text:
             thy = build_theory(current_text.splitlines(), add_print_state=False, end_with=None)
             ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
@@ -666,7 +669,8 @@ def try_cegis_repairs(*, full_text: str, hole_span: Tuple[int, int], goal_text: 
 
 def _repair_block(current_text: str, lines: List[str], start: int, end: int, goal_text: str, 
                  state0: str, isabelle, session: str, model: Optional[str], left, trace: bool, 
-                 block_type: str, stage: int, *, prior_store: Optional[Dict[str, List[str]]] = None) -> str:
+                 block_type: str, stage: int, *, prior_store: Optional[Dict[str, List[str]]] = None,
+                 max_attempts: int = 3, beam_k: int = 1) -> str:
     _, errs = _quick_state_and_errors(isabelle, session, current_text)
     err_texts = _normalize_error_texts(errs)
     ce = get_counterexample_hints_for_repair(isabelle, session, state0, timeout_s=10)
@@ -682,102 +686,109 @@ def _repair_block(current_text: str, lines: List[str], start: int, end: int, goa
     _log("repair", "counterexamples (LLM input)", "\n".join(ce_list) or "(none)", trace=trace)
     rounds = 3 if left() >= 18.0 else 2 if left() >= 10.0 else 1
     mem = _RepairMemory()
+    attempts = 0
+    attempt_cap = max(1, int(max_attempts or 1))
+    base_beam = max(1, int(beam_k or 1))
 
     # Build proposals in a few rounds; track failures and surface them to the LLM
     for rr in range(rounds):
-        if left() <= 3.0:
+        if left() <= 3.0 or attempts >= attempt_cap:
             break
         mem.rounds = rr + 1
-        why = f"Previous {block_type}-block attempt did not solve the goal; try a different strategy."
-        timeout = int(min(60, max(8, left() * (0.55 / max(1, rounds - rr)))))
-        
-        # Build prior failed blocks text (trim + separators)
-        prior_blocks_for_type = list(prior_store.get(block_type, [])) if isinstance(prior_store, dict) else []
-        seed_list = [block] + mem.prev_blocks + prior_blocks_for_type
-        
-        # De-dup while preserving order (by fingerprint)
-        seen: Set[str] = set()
-        uniq: List[str] = []
-        for b in seed_list:
-            fpb = _fingerprint_block(b)
-            if fpb and fpb not in seen:
-                seen.add(fpb); uniq.append(b)
-        seed_list = uniq
-        
-        if seed_list:
-            fails_txt = ("\n---\n".join(_trim_block_for_prompt(b) for b in seed_list[:_MAX_PREV_BLOCKS])) or "(none)"
-            _log("repair", "prior_block_failures (LLM input)", fails_txt, trace=trace)
-        else:
-            fails_txt = "(none)"        
-        
-        try:
-            blk = _propose_block_repair(
-                goal=goal_text, errors=err_texts, ce_hints=ce, 
-                proof_context=proof_context, block_type=block_type,
-                block_text=block, model=model, timeout_s=timeout, why=why,
-                prior_failed_blocks=fails_txt
-            )
-        except Exception:
-            blk = ""
-        
-        if not _is_effective_block(blk):
-            continue
-        
-        # STRICT DEDUP: If this block matches ANY prior failure, skip it immediately
-        fp_new = _fingerprint_block(blk)
-        all_prior_fps = set([_fingerprint_block(b) for b in (mem.prev_blocks + prior_blocks_for_type)])
-        
-        if fp_new in all_prior_fps:
-            if trace:
-                print(f"[repair] Skipping duplicate block (fingerprint: {fp_new[:8]}...)")
-            continue  # Don't even try to verify, just skip
-        
-        before = blk
-        if block_type == "case":
-            blk = _strip_wrapper_to_case_block(blk, block)
-        elif block_type == "have-show":
-            blk = _strip_wrapper_to_have_show(blk, block)
-        elif block_type == "subproof":
-            blk = _strip_wrapper_to_subproof(blk)              
-        if blk.strip() == block.strip():
-            continue
-        
-        blk_with_sorry = _replace_failing_tactics_with_sorry(blk, full_text_lines=lines, start_line=start + 1, 
-                                                             end_line=end + 1, isabelle=isabelle, 
-                                                             session=session, trace=trace)
-        _log("repair", f"{block_type}-block (output)", blk_with_sorry, trace=trace)
-        
-        # Record this failed candidate into local and shared stores (so next round tries differ)
-        fp = _fingerprint_block(blk_with_sorry)
-        if fp and fp not in mem.prev_fps:
-            mem.prev_fps.add(fp)
-            mem.prev_blocks.insert(0, blk_with_sorry)
-            mem.prev_blocks = mem.prev_blocks[:_MAX_PREV_BLOCKS]
-            if isinstance(prior_store, dict):
-                lst = prior_store.setdefault(block_type, [])
-                # De-dup in shared store too
-                if fp not in [_fingerprint_block(x) for x in lst]:
-                    lst.insert(0, blk_with_sorry)
-                    del lst[_MAX_PREV_BLOCKS:]        
-        
-        # FIX: Properly replace the block by splitting into lines
-        new_block_lines = blk_with_sorry.splitlines()
-        patched_lines = lines[:start] + new_block_lines + lines[end:]
-        patched = "\n".join(patched_lines)
-        
-        thy = build_theory(patched.splitlines(), add_print_state=False, end_with=None)
-        ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
-        
-        if ok:
-            return patched
-        
-        # Update for next iteration - recalculate indices based on new block size
-        current_text = patched
-        lines = patched_lines  # Use the already-split lines
-        # Adjust end index: new_end = start + len(new_block_lines)
-        end = start + len(new_block_lines)
-        # Update proof context for next round too
-        proof_context = _extract_proof_context(current_text, start)
+        beam_this_round = min(base_beam if left() >= 10.0 else 1, attempt_cap - attempts)
+        for _ in range(beam_this_round):
+            if left() <= 3.0 or attempts >= attempt_cap:
+                break
+            attempts += 1
+            why = f"Previous {block_type}-block attempt did not solve the goal; try a different strategy."
+            timeout = int(min(60, max(8, left() * (0.55 / max(1, rounds - rr)))))
+            
+            # Build prior failed blocks text (trim + separators)
+            prior_blocks_for_type = list(prior_store.get(block_type, [])) if isinstance(prior_store, dict) else []
+            seed_list = [block] + mem.prev_blocks + prior_blocks_for_type
+            
+            # De-dup while preserving order (by fingerprint)
+            seen: Set[str] = set()
+            uniq: List[str] = []
+            for b in seed_list:
+                fpb = _fingerprint_block(b)
+                if fpb and fpb not in seen:
+                    seen.add(fpb); uniq.append(b)
+            seed_list = uniq
+            
+            if seed_list:
+                fails_txt = ("\n---\n".join(_trim_block_for_prompt(b) for b in seed_list[:_MAX_PREV_BLOCKS])) or "(none)"
+                _log("repair", "prior_block_failures (LLM input)", fails_txt, trace=trace)
+            else:
+                fails_txt = "(none)"        
+            
+            try:
+                blk = _propose_block_repair(
+                    goal=goal_text, errors=err_texts, ce_hints=ce, 
+                    proof_context=proof_context, block_type=block_type,
+                    block_text=block, model=model, timeout_s=timeout, why=why,
+                    prior_failed_blocks=fails_txt
+                )
+            except Exception:
+                blk = ""
+            
+            if not _is_effective_block(blk):
+                continue
+            
+            # STRICT DEDUP: If this block matches ANY prior failure, skip it immediately
+            fp_new = _fingerprint_block(blk)
+            all_prior_fps = set([_fingerprint_block(b) for b in (mem.prev_blocks + prior_blocks_for_type)])
+            
+            if fp_new in all_prior_fps:
+                if trace:
+                    print(f"[repair] Skipping duplicate block (fingerprint: {fp_new[:8]}...)")
+                continue  # Don't even try to verify, just skip
+            
+            if block_type == "case":
+                blk = _strip_wrapper_to_case_block(blk, block)
+            elif block_type == "have-show":
+                blk = _strip_wrapper_to_have_show(blk, block)
+            elif block_type == "subproof":
+                blk = _strip_wrapper_to_subproof(blk)              
+            if blk.strip() == block.strip():
+                continue
+            
+            blk_with_sorry = _replace_failing_tactics_with_sorry(blk, full_text_lines=lines, start_line=start + 1, 
+                                                                 end_line=end + 1, isabelle=isabelle, 
+                                                                 session=session, trace=trace)
+            _log("repair", f"{block_type}-block (output)", blk_with_sorry, trace=trace)
+            
+            # Record this failed candidate into local and shared stores (so next round tries differ)
+            fp = _fingerprint_block(blk_with_sorry)
+            if fp and fp not in mem.prev_fps:
+                mem.prev_fps.add(fp)
+                mem.prev_blocks.insert(0, blk_with_sorry)
+                mem.prev_blocks = mem.prev_blocks[:_MAX_PREV_BLOCKS]
+                if isinstance(prior_store, dict):
+                    lst = prior_store.setdefault(block_type, [])
+                    # De-dup in shared store too
+                    if fp not in [_fingerprint_block(x) for x in lst]:
+                        lst.insert(0, blk_with_sorry)
+                        del lst[_MAX_PREV_BLOCKS:]        
+            
+            # FIX: Properly replace the block by splitting into lines
+            new_block_lines = blk_with_sorry.splitlines()
+            patched_lines = lines[:start] + new_block_lines + lines[end:]
+            patched = "\n".join(patched_lines)
+            
+            thy = build_theory(patched.splitlines(), add_print_state=False, end_with=None)
+            ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
+            
+            if ok:
+                return patched
+            
+            # Update for next iteration - recalculate indices based on new block size
+            current_text = patched
+            lines = patched_lines  # Use the already-split lines
+            # Adjust end index: new_end = start + len(new_block_lines)
+            end = start + len(new_block_lines)
+            # Update proof context for next round too
+            proof_context = _extract_proof_context(current_text, start)
     
     return current_text
 
@@ -814,8 +825,12 @@ def regenerate_whole_proof(*, full_text: str, goal_text: str, model: Optional[st
     if prior_outline_text:
         prior_store["whole"] = [prior_outline_text]
     patched = _repair_block(full_text, lines, ws, we, goal_text, state0, isabelle, session,
-                            model, left, trace, "whole", stage=3, prior_store=prior_store)
+                            model, left, trace, "whole", stage=3, prior_store=prior_store,
+                            max_attempts=3, beam_k=1)
     if patched != full_text:
-        # _repair_block only returns a different text if it verified successfully
-        return patched, True, "regen:whole-proof"
+        thy = build_theory(patched.splitlines(), add_print_state=False, end_with=None)
+        ok, _ = finished_ok(_run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_VERIFY_TIMEOUT_S))
+        if ok:
+            return patched, True, "regen:whole-proof"
+        return patched, False, "regen:unverified"
     return full_text, False, "regen:no-change"

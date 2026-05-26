@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from typing import List, Optional
 
@@ -21,9 +22,21 @@ def _parse_temps(s: Optional[str]) -> Optional[List[float]]:
             raise argparse.ArgumentTypeError(f"Invalid temperature: {p!r}")
     return out or None
 
+def _normalize_goal_text(text: str) -> str:
+    """Accept either a raw proposition or a pasted lemma/theorem statement."""
+    data = (text or "").strip()
+    if not data:
+        return ""
+    m = re.search(r'(?s)^\s*(?:lemma|theorem|corollary)\b[^"]*"([^"]+)"', data)
+    if m:
+        return m.group(1).strip()
+    if len(data) >= 2 and data[0] == '"' and data[-1] == '"':
+        return data[1:-1].strip()
+    return data
+
 
 def main(argv: Optional[List[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Planner: Plan → Sketch → Fill (Isabelle/HOL)")
+    ap = argparse.ArgumentParser(description="Planner: Plan, sketch, fill, and repair Isabelle/HOL proofs")
 
     # Accept BOTH a --goal flag and a positional goal (backwards-compatible)
     ap.add_argument("--goal", dest="goal_flag",
@@ -36,7 +49,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--timeout", type=int, default=120,
                     help="Total wall-clock seconds for planning + filling")
     ap.add_argument("--mode", choices=["auto", "outline"], default="auto",
-                    help="auto: allow whole proofs; outline: force placeholders and fill")
+                    help="auto: fill and repair the proof; outline: only emit a skeleton with placeholders")
 
     # Diverse-outline controls
     ap.add_argument("--diverse-outlines", dest="diverse", action="store_true",
@@ -52,7 +65,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Local repair controls
     ap.add_argument("--repairs", dest="repairs", action="store_true",
                     help="Enable local LLM-guided repairs if a hole fails to fill (default).")
-    ap.add_argument("--no-repairs", dest="repairs", action="store_false",
+    ap.add_argument("--no-repairs", "--no-repair", dest="repairs", action="store_false",
                     help="Disable local repairs; only try direct fill for each hole.")
     ap.set_defaults(repairs=True)
     ap.add_argument("--max-repairs-per-hole", type=int, default=2,
@@ -120,12 +133,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     # Resolve goal: flag > positional > stdin
-    goal = args.goal_flag or args.goal_pos
+    goal = _normalize_goal_text(args.goal_flag or args.goal_pos or "")
     if not goal:
-        data = sys.stdin.read().strip()
-        if data.startswith('lemma "') and data.endswith('"'):
-            data = data[len('lemma "'): -1]
-        goal = data.strip()
+        goal = _normalize_goal_text(sys.stdin.read())
 
     if not goal:
         print("No goal provided. Use --goal '…', a positional goal, or pipe via stdin.", file=sys.stderr)
@@ -140,15 +150,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         raw = args.context_files.replace(",", " ").split()
         CFG.PROVER_CONTEXT_FILES = [s for s in raw if s]
 
-    # NOTE: Current driver hard-codes beam_k=2 and whole_fallback=True when calling CEGIS.
-    # We keep the flags here for forward compatibility; warn if users deviate from the current defaults.
-    if args.beam_k != 2 or (args.whole_fallback is False):
-        print(
-            "[cli] Note: driver currently uses beam_k=2 and whole_fallback=True. "
-            "These flags are accepted for forward compatibility and will take effect once driver wiring is updated.",
-            file=sys.stderr,
-        )
-
     res = plan_and_fill(
         goal,
         model=args.model,
@@ -159,6 +160,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         legacy_single_outline=(not args.diverse),
         repairs=args.repairs,
         max_repairs_per_hole=args.max_repairs_per_hole,
+        beam_k=args.beam_k,
+        whole_fallback=args.whole_fallback,
         trace=args.trace,
         # planner scoring/context
         priors_path=args.priors,
