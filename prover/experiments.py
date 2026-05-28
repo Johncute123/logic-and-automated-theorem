@@ -72,6 +72,7 @@ SUITE_MAP = {
     "nat":   BENCH_DIR / "nat.txt",
     "sets":  BENCH_DIR / "sets.txt",
     "logic": BENCH_DIR / "logic.txt",
+    "assignment": BENCH_DIR / "assignment_suite.txt",
 }
 
 # Precompile once for small speedup on large files

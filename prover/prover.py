@@ -209,7 +209,8 @@ def prove_goal(isabelle, session_id: str, goal: str, model_name_or_ensemble: str
     stagnant_depths = 0
 
     if trace:
-        print(color(use_color, "bold", f"\n▶ Goal: {goal}"))
+        goal_hdr = ">> Goal:" if os.name == "nt" else "▶ Goal:"
+        print(color(use_color, "bold", f"\n{goal_hdr} {goal}"))
         print(color(use_color, "gray", f"Models: {display_model} | Beam={beam_w} | MaxDepth={max_depth} | Timeout={budget}s"))
 
     for depth in range(max_depth):

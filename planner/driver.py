@@ -123,11 +123,33 @@ def _fill_one_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int,
     
     # Handle finisher
     if fin:
+        fin_stripped = fin.strip()
+        s, e = hole_span
+        ls = full_text.rfind("\n", 0, s) + 1
+        le = full_text.find("\n", s)
+        hole_line = full_text[ls:(le if le != -1 else len(full_text))]
+        indent = hole_line[: len(hole_line) - len(hole_line.lstrip(" "))]
+
+        # Inside have/show: replace sorry with a single `by ...` / `done` line.
+        head_idx = None
+        scan_start = max(0, full_text.rfind("\n", 0, max(0, ls - 512)) + 1)
+        segment = full_text[scan_start:s]
+        seg_lines = segment.splitlines()
+        for i in range(len(seg_lines) - 1, -1, -1):
+            if _HEAD_CMD_RE.match(seg_lines[i] or ""):
+                head_idx = i
+                break
+
+        if head_idx is not None and (fin_stripped.startswith("by ") or fin_stripped == "done"):
+            new_text = full_text[:s] + indent + fin_stripped + "\n" + full_text[e:]
+            if _verify_full_proof(isabelle, session, new_text):
+                return new_text, True, fin_stripped
+            return full_text, False, "finisher-unverified-have/show"
+
         script_lines = applies + [fin]
         insert = "\n  " + "\n  ".join(script_lines) + "\n"
-        s, e = hole_span
         new_text = full_text[:s] + insert + full_text[e:]
-        
+
         if _verify_full_proof(isabelle, session, new_text):
             return new_text, True, "\n".join(script_lines)
         return full_text, False, "finisher-unverified"

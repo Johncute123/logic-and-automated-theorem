@@ -1,5 +1,11 @@
-The following are simple suits for testing functionalities only:
+**Assignment evaluation suite** (30 goals, easy/medium/hard):
 
+- `assignment_suite.txt` — goals for `planner.experiments bench --suite assignment`
+- `assignment_suite.manifest.json` — tier, source, rationale per goal
+- `verify_assignment_suite.py` — sync check between txt and manifest
+- `csv_to_report_table.py` — build markdown/LaTeX summary tables from bench CSV(s)
+
+The following are simple suits for testing functionalities only:
 - logic.txt
 - sets.txt
 - nat.txt

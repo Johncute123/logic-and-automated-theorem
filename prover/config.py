@@ -100,6 +100,7 @@ def _load_from_env() -> Dict[str, Any]:
 
     # ---------- Isabelle ----------
     d["ISABELLE_SESSION"] = _get("ISABELLE_SESSION", "HOL")
+    d["ISABELLE_INST_DIR"] = _get("ISABELLE_INST_DIR", "")
 
     # extra imports for the Scratch theory (space-separated)
     d["EXTRA_IMPORTS"] = _split_ws(os.environ.get("EXTRA_IMPORTS", ""))

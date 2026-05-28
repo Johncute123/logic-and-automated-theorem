@@ -1,12 +1,60 @@
 # prover/isabelle_api.py 
 from __future__ import annotations
 
-import os, json, tempfile, textwrap, re, asyncio
+import os, json, tempfile, textwrap, re, asyncio, sys, shutil
+from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
-# Re-export these (cli.py and experiments.py import them from here)
-from isabelle_client import start_isabelle_server, get_isabelle_client, IsabelleResponse
+# Re-export client types; wrap server startup for Windows (needs ISABELLE_INST_DIR).
+from isabelle_client import get_isabelle_client, IsabelleResponse
+from isabelle_client.utils import start_isabelle_server as _start_isabelle_server
+
+
+def _resolve_isabelle_inst_dir() -> Optional[str]:
+    """Return Isabelle distribution root (parent of bin/), if discoverable."""
+    raw = (os.environ.get("ISABELLE_INST_DIR") or "").strip()
+    if raw:
+        p = Path(raw)
+        if p.is_dir():
+            return str(p.resolve())
+    exe = shutil.which("isabelle") or shutil.which("isabelle.cmd")
+    if exe:
+        bindir = Path(exe).resolve().parent
+        if bindir.name == "bin":
+            return str(bindir.parent)
+    for candidate in (
+        Path.home() / "Desktop" / "Isabelle2025-2",
+        Path(r"C:\Program Files\Isabelle2025"),
+        Path(r"C:\Program Files\Isabelle2025-2"),
+    ):
+        if (candidate / "bin" / "isabelle").exists() or (candidate / "bin" / "isabelle.cmd").exists():
+            return str(candidate.resolve())
+    return None
+
+
+def _ensure_isabelle_inst_dir() -> None:
+    """isabelle-client's Cygwin launcher on Windows requires ISABELLE_INST_DIR."""
+    if sys.platform != "win32":
+        return
+    inst = _resolve_isabelle_inst_dir()
+    if not inst:
+        raise RuntimeError(
+            "On Windows, set ISABELLE_INST_DIR to your Isabelle install root "
+            "(the folder that contains bin/ and contrib/), e.g. "
+            r"C:\Users\...\Desktop\Isabelle2025-2"
+        )
+    os.environ["ISABELLE_INST_DIR"] = inst
+
+
+def start_isabelle_server(
+    log_file: str | None = None,
+    name: str | None = None,
+    port: int | None = None,
+):
+    """Start Isabelle server (sets ISABELLE_INST_DIR on Windows first)."""
+    _ensure_isabelle_inst_dir()
+    return _start_isabelle_server(log_file=log_file, name=name, port=port)
 
 # ------------------ Config (kept light and backwards-compatible) ------------------
 try:

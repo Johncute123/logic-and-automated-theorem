@@ -107,6 +107,7 @@ SUITE_MAP = {
     "nat":   BENCH_DIR / "nat.txt",
     "sets":  BENCH_DIR / "sets.txt",
     "logic": BENCH_DIR / "logic.txt",
+    "assignment": BENCH_DIR / "assignment_suite.txt",
 }
 
 # Precompile once for small speedup on large files
@@ -536,9 +537,16 @@ def _bench_summarize(rows: List[BenchRow]) -> Dict[str, Any]:
         "median_fills": int(stats.median(fills)) if fills else 0,
     }
 
+def _safe_filename_tag(tag: str) -> str:
+    """Make a config tag safe for filenames (Windows forbids : \\ / etc.)."""
+    s = tag.replace(" ", "_")
+    for ch in '<>:"/\\|?*':
+        s = s.replace(ch, "-")
+    return s
+
 def _bench_write_csv(suite_name: str, cfg_name: str, rows: List[BenchRow]) -> Path:
     ts = time.strftime("%Y%m%d-%H%M%S")
-    safe_tag = cfg_name.replace(" ", "_")
+    safe_tag = _safe_filename_tag(cfg_name)
     out = RESULTS_DIR / f"{ts}-{suite_name}-{safe_tag}.csv"
     headers = ["goal", "success", "elapsed_s", "mode", "model", "outline_chars", "fills", "failed_holes", "had_sorry", "verified_ok"]
     with out.open("w", newline="", encoding="utf-8") as f:
