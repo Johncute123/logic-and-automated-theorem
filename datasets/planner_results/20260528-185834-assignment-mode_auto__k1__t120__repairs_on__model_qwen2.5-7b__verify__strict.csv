@@ -1,0 +1,31 @@
+goal,success,elapsed_s,mode,model,outline_chars,fills,failed_holes,had_sorry,verified_ok
+xs @ [] = xs,False,107.9972,auto,qwen2.5:7b,198,0,1,False,False
+[] @ xs = xs,False,90.3848,auto,qwen2.5:7b,203,0,1,False,False
+map id xs = xs,False,47.2594,auto,qwen2.5:7b,290,2,0,False,False
+length (rev xs) = length xs,False,129.6556,auto,qwen2.5:7b,374,0,0,True,True
+length (xs @ ys) = length xs + length ys,False,113.7016,auto,qwen2.5:7b,534,1,0,False,False
+(A ⟶ B) ⟷ (¬A ∨ B),False,144.0756,auto,qwen2.5:7b,267,2,0,True,True
+(¬ A ∧ ¬ B) ⟷ ¬(A ∨ B),False,79.8362,auto,qwen2.5:7b,188,0,1,False,False
+(A ∧ (B ∨ C)) ⟶ ((A ∧ B) ∨ (A ∧ C)),False,125.6298,auto,qwen2.5:7b,335,0,0,False,False
+(A ⟶ B) ⟶ (¬B ⟶ ¬A),False,101.5696,auto,qwen2.5:7b,171,1,0,False,False
+(if A then B else B) = B,False,129.7071,auto,qwen2.5:7b,310,2,0,True,True
+rev (xs @ ys) = rev ys @ rev xs,False,112.1150,auto,qwen2.5:7b,443,3,0,False,False
+map f (xs @ ys) = map f xs @ map f ys,False,117.1945,auto,qwen2.5:7b,336,0,1,False,False
+take n xs @ drop n xs = xs,False,128.4628,auto,qwen2.5:7b,594,0,0,True,True
+set (xs @ ys) = set xs ∪ set ys,False,126.4039,auto,qwen2.5:7b,572,0,0,False,False
+filter p (xs @ ys) = filter p xs @ filter p ys,False,133.4225,auto,qwen2.5:7b,591,0,0,True,True
+x ∈ set xs ⟹ x ∈ set (xs @ ys),False,137.0788,auto,qwen2.5:7b,470,0,0,True,True
+(∀x. P x ⟶ Q x) ⟶ ((∃x. P x) ⟶ (∃x. Q x)),False,92.1547,auto,qwen2.5:7b,191,0,1,False,False
+((A ⟶ C) ∧ (B ⟶ C)) ⟶ (A ∨ B ⟶ C),False,124.0817,auto,qwen2.5:7b,467,0,1,False,False
+(f = g) ⟷ (∀x. f x = g x),False,143.5710,auto,qwen2.5:7b,267,0,0,True,True
+map f (filter p xs) = filter (λx. p x) (map f xs),False,143.7615,auto,qwen2.5:7b,518,0,0,True,True
+rev (rev xs) = xs,False,130.2884,auto,qwen2.5:7b,434,0,0,True,True
+distinct xs ⟹ distinct (rev xs),False,173.1339,auto,qwen2.5:7b,280,0,0,True,True
+map f (rev xs) = rev (map f xs),False,146.7124,auto,qwen2.5:7b,550,0,0,True,True
+(∀x0. P0 x0 ⟶ Q0 x0) ⟶ ((∃x0. P0 x0) ⟶ (∃x0. Q0 x0)),False,139.5412,auto,qwen2.5:7b,505,0,0,True,True
+(∀x2. P2 x2 ⟶ Q2 x2) ⟷ (¬ (∃x2. P2 x2 ∧ ¬ Q2 x2)),False,142.1719,auto,qwen2.5:7b,384,0,0,True,True
+(((A6 ⟶ B6) ∧ (B6 ⟶ C6)) ⟶ (A6 ⟶ C6)),False,133.1918,auto,qwen2.5:7b,262,0,1,False,False
+(A6 ⟶ C6) ⟶ ((B6 ⟶ C6) ⟶ (A6 ∨ B6 ⟶ C6)),False,117.3750,auto,qwen2.5:7b,150,0,0,False,False
+(¬ (∃x5. P5 x5)) ⟷ (∀x5. ¬ P5 x5),False,58.4489,auto,qwen2.5:7b,325,2,0,False,False
+(A ∧ (B ⟶ C)) ⟶ ((A ∧ B) ⟶ C),False,103.3486,auto,qwen2.5:7b,360,0,1,False,False
+(A ⟶ (B ⟶ C)) ⟶ (A ∧ B ⟶ C),False,94.3512,auto,qwen2.5:7b,276,0,1,False,False

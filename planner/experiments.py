@@ -46,6 +46,18 @@ from prover.isabelle_api import (
 from prover import config as CFG  # NEW: live switches for premise/context
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Silence Windows asyncio Proactor ValueError closed pipe warnings
+import sys
+def _silence_unraisable_proactor_warning(unraisable):
+    if (
+        unraisable.exc_type is ValueError
+        and "I/O operation on closed pipe" in str(unraisable.exc_value)
+    ):
+        return
+    sys.__unraisablehook__(unraisable)
+sys.unraisablehook = _silence_unraisable_proactor_warning
+
+
 def _drain_and_close_loop(loop: asyncio.AbstractEventLoop | None) -> None:
     if not loop or loop.is_closed():
         return
@@ -107,6 +119,7 @@ SUITE_MAP = {
     "nat":   BENCH_DIR / "nat.txt",
     "sets":  BENCH_DIR / "sets.txt",
     "logic": BENCH_DIR / "logic.txt",
+    "assignment": BENCH_DIR / "assignment_suite.txt",
 }
 
 # Precompile once for small speedup on large files
@@ -536,9 +549,16 @@ def _bench_summarize(rows: List[BenchRow]) -> Dict[str, Any]:
         "median_fills": int(stats.median(fills)) if fills else 0,
     }
 
+def _safe_filename_tag(tag: str) -> str:
+    """Make a config tag safe for filenames (Windows forbids : \\ / etc.)."""
+    s = tag.replace(" ", "_")
+    for ch in '<>:"/\\|?*':
+        s = s.replace(ch, "-")
+    return s
+
 def _bench_write_csv(suite_name: str, cfg_name: str, rows: List[BenchRow]) -> Path:
     ts = time.strftime("%Y%m%d-%H%M%S")
-    safe_tag = cfg_name.replace(" ", "_")
+    safe_tag = _safe_filename_tag(cfg_name)
     out = RESULTS_DIR / f"{ts}-{suite_name}-{safe_tag}.csv"
     headers = ["goal", "success", "elapsed_s", "mode", "model", "outline_chars", "fills", "failed_holes", "had_sorry", "verified_ok"]
     with out.open("w", newline="", encoding="utf-8") as f:
@@ -560,13 +580,17 @@ def _bench_write_csv(suite_name: str, cfg_name: str, rows: List[BenchRow]) -> Pa
     return out
 
 def cmd_bench(args: argparse.Namespace) -> None:
-    # Resolve suites
+    # Resolve suites (--file wins if both are set)
     if args.file:
         suites: List[Tuple[str, Path]] = [(Path(args.file).stem, Path(args.file))]
     elif args.suite == "all":
         suites = list(SUITE_MAP.items())
-    else:
+    elif args.suite:
         suites = [(args.suite, SUITE_MAP[args.suite])]
+    else:
+        raise SystemExit(
+            "bench requires --suite {all,assignment,lists,...} or --file path/to/goals.txt"
+        )
 
     # Start Isabelle once (we also optionally use it to verify proofs)
     server_info, proc = start_isabelle_server(name="planner", log_file="logs/planner_bench.log")

@@ -1,0 +1,50 @@
+{
+  "name": "3806ict_assignment_suite",
+  "version": 1,
+  "description": "Balanced easy/medium/hard goals for planner evaluation (3806ICT Assignment 2).",
+  "citations": [
+    {
+      "id": "mini_f2f",
+      "title": "MiniF2F: a cross-domain benchmark for formal Olympiad-level mathematics",
+      "authors": "Kunhao Zheng, Jesse Michael Han, Stanislas Polu",
+      "year": 2022,
+      "url": "https://arxiv.org/abs/2109.00161",
+      "note": "Optional extension; not included in the core 30-goal suite (too heavy for default timeouts)."
+    }
+  ],
+  "goals": [
+    {"tier": "easy", "source": "datasets/lists.txt", "line": 2, "goal": "xs @ [] = xs", "rationale": "Single-step list lemma; tests outline+fill with simp."},
+    {"tier": "easy", "source": "datasets/lists.txt", "line": 3, "goal": "[] @ xs = xs", "rationale": "Append identity; baseline should often close."},
+    {"tier": "easy", "source": "datasets/lists.txt", "line": 5, "goal": "map id xs = xs", "rationale": "Map identity on lists."},
+    {"tier": "easy", "source": "datasets/lists.txt", "line": 9, "goal": "length (rev xs) = length xs", "rationale": "Length/rev commutation."},
+    {"tier": "easy", "source": "datasets/lists.txt", "line": 8, "goal": "length (xs @ ys) = length xs + length ys", "rationale": "Length distributes over append."},
+    {"tier": "easy", "source": "datasets/hol_main_easy_goals_test.txt", "line": 4, "goal": "(A ⟶ B) ⟷ (¬A ∨ B)", "rationale": "Propositional equivalence; no induction."},
+    {"tier": "easy", "source": "datasets/hol_main_easy_goals_test.txt", "line": 3, "goal": "(¬ A ∧ ¬ B) ⟷ ¬(A ∨ B)", "rationale": "De Morgan; tests boolean outline."},
+    {"tier": "easy", "source": "datasets/hol_main_easy_goals_test.txt", "line": 6, "goal": "(A ∧ (B ∨ C)) ⟶ ((A ∧ B) ∨ (A ∧ C))", "rationale": "Distribuition law."},
+    {"tier": "easy", "source": "datasets/hol_main_easy_goals_test.txt", "line": 5, "goal": "(A ⟶ B) ⟶ (¬B ⟶ ¬A)", "rationale": "Contrapositive schema."},
+    {"tier": "easy", "source": "datasets/hol_main_easy_goals_test.txt", "line": 11, "goal": "(if A then B else B) = B", "rationale": "Simple if-then-else law."},
+
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 4, "goal": "rev (xs @ ys) = rev ys @ rev xs", "rationale": "Requires induction or rewrite setup."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 6, "goal": "map f (xs @ ys) = map f xs @ map f ys", "rationale": "Map/append interaction."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 12, "goal": "take n xs @ drop n xs = xs", "rationale": "Take/drop split lemma."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 13, "goal": "set (xs @ ys) = set xs ∪ set ys", "rationale": "Set conversion over append."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 17, "goal": "filter p (xs @ ys) = filter p xs @ filter p ys", "rationale": "Filter distributes over append."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 14, "goal": "x ∈ set xs ⟹ x ∈ set (xs @ ys)", "rationale": "Membership monotonicity."},
+    {"tier": "medium", "source": "datasets/hol_main_easy_goals_test.txt", "line": 10, "goal": "(∀x. P x ⟶ Q x) ⟶ ((∃x. P x) ⟶ (∃x. Q x))", "rationale": "First-order quantifier pattern."},
+    {"tier": "medium", "source": "datasets/hol_main_easy_goals_test.txt", "line": 7, "goal": "((A ⟶ C) ∧ (B ⟶ C)) ⟶ (A ∨ B ⟶ C)", "rationale": "Disjunction elimination schema."},
+    {"tier": "medium", "source": "datasets/hol_main_easy_goals_test.txt", "line": 12, "goal": "(f = g) ⟷ (∀x. f x = g x)", "rationale": "Extensionality-style statement."},
+    {"tier": "medium", "source": "datasets/lists.txt", "line": 18, "goal": "map f (filter p xs) = filter (λx. p x) (map f xs)", "rationale": "Map/filter commute; nested binders."},
+
+    {"tier": "hard", "source": "datasets/lists.txt", "line": 1, "goal": "rev (rev xs) = xs", "rationale": "Classic induction benchmark for planner fill/repair."},
+    {"tier": "hard", "source": "datasets/lists.txt", "line": 16, "goal": "distinct xs ⟹ distinct (rev xs)", "rationale": "Induction with distinctness side condition."},
+    {"tier": "hard", "source": "datasets/lists.txt", "line": 7, "goal": "map f (rev xs) = rev (map f xs)", "rationale": "Map/rev commutation; multi-step proof."},
+    {"tier": "hard", "source": "datasets/hol_main_mid_goals.txt", "line": 1, "goal": "(∀x0. P0 x0 ⟶ Q0 x0) ⟶ ((∃x0. P0 x0) ⟶ (∃x0. Q0 x0))", "rationale": "Quantifier alternation; stresses subgoal extraction."},
+    {"tier": "hard", "source": "datasets/hol_main_mid_goals.txt", "line": 3, "goal": "(∀x2. P2 x2 ⟶ Q2 x2) ⟷ (¬ (∃x2. P2 x2 ∧ ¬ Q2 x2))", "rationale": "Classical quantifier duality."},
+    {"tier": "hard", "source": "datasets/hol_main_mid_goals.txt", "line": 7, "goal": "(((A6 ⟶ B6) ∧ (B6 ⟶ C6)) ⟶ (A6 ⟶ C6))", "rationale": "Transitivity chain in propositional logic."},
+    {"tier": "hard", "source": "datasets/hol_main_easy_goals.txt", "line": 7, "goal": "(A6 ⟶ C6) ⟶ ((B6 ⟶ C6) ⟶ (A6 ∨ B6 ⟶ C6))", "rationale": "Long propositional goal; tests repair staging."},
+    {"tier": "hard", "source": "datasets/hol_main_mid_goals.txt", "line": 6, "goal": "(¬ (∃x5. P5 x5)) ⟷ (∀x5. ¬ P5 x5)", "rationale": "Negated existence vs universal negation."},
+    {"tier": "hard", "source": "datasets/hol_main_easy_goals_test.txt", "line": 1, "goal": "(A ∧ (B ⟶ C)) ⟶ ((A ∧ B) ⟶ C)", "rationale": "Implication nesting under conjunction."},
+    {"tier": "hard", "source": "datasets/hol_main_easy_goals_test.txt", "line": 2, "goal": "(A ⟶ (B ⟶ C)) ⟶ (A ∧ B ⟶ C)", "rationale": "Curry-style rearrangement; outline sensitivity."}
+  ],
+  "stats": {"easy": 10, "medium": 10, "hard": 10, "total": 30}
+}

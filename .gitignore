@@ -1,1 +1,10 @@
 .env
+.venv/
+.vscode/
+**/__pycache__/
+*.pyc
+tmp/
+datasets/temp_failed.txt
+*.log
+*.log.jsonl
+*.csv

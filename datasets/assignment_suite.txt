@@ -1,0 +1,40 @@
+# 3806ICT Assignment 2 — evaluation suite (30 goals)
+# Tier labels are for humans; planner bench reads goals only (lines starting with # are skipped).
+# Full metadata: assignment_suite.manifest.json
+# Documentation: ASSIGNMENT_DATASET.md
+
+# --- easy (10): list identities + propositional schemas ---
+xs @ [] = xs
+[] @ xs = xs
+map id xs = xs
+length (rev xs) = length xs
+length (xs @ ys) = length xs + length ys
+(A ⟶ B) ⟷ (¬A ∨ B)
+(¬ A ∧ ¬ B) ⟷ ¬(A ∨ B)
+(A ∧ (B ∨ C)) ⟶ ((A ∧ B) ∨ (A ∧ C))
+(A ⟶ B) ⟶ (¬B ⟶ ¬A)
+(if A then B else B) = B
+
+# --- medium (10): append/map/filter + quantifiers ---
+rev (xs @ ys) = rev ys @ rev xs
+map f (xs @ ys) = map f xs @ map f ys
+take n xs @ drop n xs = xs
+set (xs @ ys) = set xs ∪ set ys
+filter p (xs @ ys) = filter p xs @ filter p ys
+x ∈ set xs ⟹ x ∈ set (xs @ ys)
+(∀x. P x ⟶ Q x) ⟶ ((∃x. P x) ⟶ (∃x. Q x))
+((A ⟶ C) ∧ (B ⟶ C)) ⟶ (A ∨ B ⟶ C)
+(f = g) ⟷ (∀x. f x = g x)
+map f (filter p xs) = filter (λx. p x) (map f xs)
+
+# --- hard (10): induction + quantifier stress ---
+rev (rev xs) = xs
+distinct xs ⟹ distinct (rev xs)
+map f (rev xs) = rev (map f xs)
+(∀x0. P0 x0 ⟶ Q0 x0) ⟶ ((∃x0. P0 x0) ⟶ (∃x0. Q0 x0))
+(∀x2. P2 x2 ⟶ Q2 x2) ⟷ (¬ (∃x2. P2 x2 ∧ ¬ Q2 x2))
+(((A6 ⟶ B6) ∧ (B6 ⟶ C6)) ⟶ (A6 ⟶ C6))
+(A6 ⟶ C6) ⟶ ((B6 ⟶ C6) ⟶ (A6 ∨ B6 ⟶ C6))
+(¬ (∃x5. P5 x5)) ⟷ (∀x5. ¬ P5 x5)
+(A ∧ (B ⟶ C)) ⟶ ((A ∧ B) ⟶ C)
+(A ⟶ (B ⟶ C)) ⟶ (A ∧ B ⟶ C)
