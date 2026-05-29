@@ -568,13 +568,17 @@ def _bench_write_csv(suite_name: str, cfg_name: str, rows: List[BenchRow]) -> Pa
     return out
 
 def cmd_bench(args: argparse.Namespace) -> None:
-    # Resolve suites
+    # Resolve suites (--file wins if both are set)
     if args.file:
         suites: List[Tuple[str, Path]] = [(Path(args.file).stem, Path(args.file))]
     elif args.suite == "all":
         suites = list(SUITE_MAP.items())
-    else:
+    elif args.suite:
         suites = [(args.suite, SUITE_MAP[args.suite])]
+    else:
+        raise SystemExit(
+            "bench requires --suite {all,assignment,lists,...} or --file path/to/goals.txt"
+        )
 
     # Start Isabelle once (we also optionally use it to verify proofs)
     server_info, proc = start_isabelle_server(name="planner", log_file="logs/planner_bench.log")
