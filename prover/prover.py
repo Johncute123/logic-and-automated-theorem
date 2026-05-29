@@ -47,6 +47,88 @@ _BOOTSTRAP_FINISHERS: Tuple[str, ...] = (
     "by clarsimp",
 )
 
+def _direct_finishers_for_goal(goal: str) -> list[str]:
+    finishers = [
+        "by simp",
+        "by auto",
+        "by clarsimp",
+        "by fastforce",
+        "by blast",
+        "by (simp add: fun_eq_iff)",
+        "by (rule ext, simp)",
+        "by metis",
+    ]
+
+    variables = []
+
+    for name in ["xs", "ys", "zs", "n", "m"]:
+        if re.search(rf"\b{re.escape(name)}\b", goal):
+            variables.append(name)
+
+    for name in variables:
+        if name in ["xs", "ys", "zs"]:
+            finishers.extend([
+                f"by (induction {name}) simp_all",
+                f"by (induction {name}) auto",
+                f"by (induction {name}) fastforce+",
+            ])
+
+        if name in ["n", "m"]:
+            finishers.extend([
+                f"by (induction {name}) simp_all",
+                f"by (induction {name} arbitrary: xs) simp_all",
+                f"by (induction {name} arbitrary: xs) auto",
+            ])
+
+    if "xs" in variables and "ys" in variables:
+        finishers.extend([
+            "by (induction xs arbitrary: ys) simp_all",
+            "by (induction xs arbitrary: ys) auto",
+        ])
+
+    if "rev" in goal:
+        finishers.extend([
+            "by (simp add: rev_append)",
+            "by (simp add: rev_rev_ident)",
+            "by (induction xs) simp_all",
+            "by (induction xs) auto",
+        ])
+
+    if "map" in goal:
+        finishers.extend([
+            "by (simp add: map_append)",
+            "by (induction xs) simp_all",
+            "by (induction xs) auto",
+        ])
+
+    if "filter" in goal:
+        finishers.extend([
+            "by (induction xs) simp_all",
+            "by (induction xs) auto",
+        ])
+
+    if "distinct" in goal:
+        finishers.extend([
+            "by (simp add: distinct_rev)",
+            "by auto",
+        ])
+
+    if "take" in goal and "drop" in goal:
+        finishers.extend([
+            "by (induction n arbitrary: xs) simp_all",
+            "by (induction xs arbitrary: n) simp_all",
+        ])
+
+    seen = set()
+    output = []
+
+    for item in finishers:
+        if item not in seen:
+            seen.add(item)
+            output.append(item)
+
+    return output
+
 _GOAL_LINE = re.compile(r'lemma\s+"(.*)"')
 
 def _global_cache_key(steps: List[str], cand: str) -> tuple:
@@ -200,7 +282,37 @@ def prove_goal(isabelle, session_id: str, goal: str, model_name_or_ensemble: str
     def time_left_s() -> float: return budget - (time.monotonic() - start_t)
 
     seed_steps = [f'lemma "{goal}"']
-    # Seed the first beam with an optional initial state hint (used by planner after print_state)
+    for finisher in _direct_finishers_for_goal(goal):
+        if time_left_s() <= 0:
+            break
+
+        per_call_timeout = max(1, int(min(time_left_s(), float(budget))))
+
+        ok, elapsed_ms = try_finish(
+            isabelle,
+            session_id,
+            seed_steps,
+            finisher,
+            timeout_s=per_call_timeout,
+        )
+
+        if trace:
+            tag = color(use_color, "green", "✓") if ok else color(use_color, "red", "×")
+            print(f"  direct {tag} {finisher} ({round(elapsed_ms)}ms)")
+
+        if ok:
+            final = seed_steps + [finisher]
+            logger.finish(True, final, 0, use_calls_count())
+
+            return {
+                "goal": goal,
+                "success": True,
+                "steps": final,
+                "depth": 0,
+                "use_calls": use_calls_count(),
+                "elapsed_s": logger.elapsed_s,
+                "model": display_model,
+            }
     seed_hint = (initial_state_hint or "").strip()
     beam: List[Tuple[int, List[str], str, Optional[int]]] = [(9999, seed_steps, seed_hint, None)]
     visited_by_depth = defaultdict(set)

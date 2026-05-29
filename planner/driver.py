@@ -80,12 +80,12 @@ def _fill_one_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int,
     
     res = prove_goal(
         isabelle, session, eff_goal, model_name_or_ensemble=model,
-        beam_w=3, max_depth=6, hint_lemmas=6, timeout=per_hole_timeout,
-        models=None, save_dir=None, use_sledge=True, sledge_timeout=10,
-        sledge_every=1, trace=trace, use_color=False, use_qc=False,
-        qc_timeout=2, qc_every=1, use_np=False, np_timeout=5, np_every=2,
-        facts_limit=8, do_minimize=False, minimize_timeout=8,
-        do_variants=False, variant_timeout=6, variant_tries=24,
+        beam_w=5, max_depth=10, hint_lemmas=8, timeout=per_hole_timeout,
+        models=None, save_dir=None, use_sledge=True, sledge_timeout=15,
+        sledge_every=1, trace=trace, use_color=False, use_qc=True,
+        qc_timeout=3, qc_every=1, use_np=True, np_timeout=5, np_every=2,
+        facts_limit=10, do_minimize=False, minimize_timeout=8,
+        do_variants=True, variant_timeout=10, variant_tries=40,
         enable_reranker=True, initial_state_hint=state_block,
     )
     
@@ -496,6 +496,52 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
         isa, session, proc = isa2, session2, proc2
 
     try:
+        # ------------------------------------------------------------
+        # Fast path: try direct stepwise proving before LLM outline.
+        # This keeps Fill and Repair, but avoids bad outlines for easy goals.
+        # ------------------------------------------------------------
+        try:
+            direct = prove_goal(
+                isa,
+                session,
+                goal,
+                model_name_or_ensemble=model,
+                beam_w=5,
+                max_depth=10,
+                hint_lemmas=8,
+                timeout=min(45, max(15, int(left_s() * 0.4))),
+                models=None,
+                save_dir=None,
+                use_sledge=True,
+                sledge_timeout=15,
+                sledge_every=1,
+                trace=trace,
+                use_color=False,
+                use_qc=True,
+                qc_timeout=3,
+                qc_every=1,
+                use_np=True,
+                np_timeout=5,
+                np_every=2,
+                facts_limit=10,
+                do_minimize=False,
+                minimize_timeout=8,
+                do_variants=True,
+                variant_timeout=10,
+                variant_tries=40,
+                enable_reranker=True,
+            )
+
+            if direct.get("success"):
+                steps = [str(s) for s in direct.get("steps", [])]
+                proof_text = build_theory(steps, add_print_state=False, end_with=None)
+
+                if _verify_full_proof(isa, session, proof_text):
+                    return PlanAndFillResult(True, proof_text, [], [])
+
+        except Exception as ex:
+            if trace:
+                print(f"[planner] direct prover fast path failed: {type(ex).__name__}: {ex}")
         # Generate outline
         if legacy_single_outline:
             full = propose_isar_skeleton(goal, model=model, temp=0.35, force_outline=(mode == "outline")).text

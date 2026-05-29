@@ -17,7 +17,7 @@ length (xs @ ys) = length xs + length ys
 
 # --- medium (10): append/map/filter + quantifiers ---
 rev (xs @ ys) = rev ys @ rev xs
-map f (xs @ ys) = map f xs @ map f ys
+map f (filter (λx. p (f x)) xs) = filter p (map f xs)
 take n xs @ drop n xs = xs
 set (xs @ ys) = set xs ∪ set ys
 filter p (xs @ ys) = filter p xs @ filter p ys
