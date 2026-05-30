@@ -356,7 +356,11 @@ def finished_ok(resps: List[IsabelleResponse]) -> Tuple[bool, Dict[str, Any]]:
     last_obj: Dict[str, Any] = {}
 
     for r in (resps or []):
-        if _normalize_type(_get_field(r, ("response_type", "type", "kind", "tag", "name"))) != "FINISHED":
+        rtype = _normalize_type(_get_field(r, ("response_type", "type", "kind", "tag", "name")))
+        if rtype == "ERROR":
+            return False, {"error": "Isabelle error found"}
+            
+        if rtype != "FINISHED":
             continue
         obj = _decode_body_to_dict(_get_field(r, ("response_body", "body", "message", "payload")))
         if not isinstance(obj, dict):
