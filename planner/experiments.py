@@ -695,6 +695,7 @@ def cmd_bench(args: argparse.Namespace) -> None:
                             "outline": outline_text,
                         }
                     )
+                    time.sleep(3)
 
             s = _bench_summarize(rows)
             def pct(x: float) -> str: return f"{x*100:.1f}%"
@@ -984,6 +985,7 @@ def cmd_regress(args: argparse.Namespace) -> None:
                     "outline": text,
                 }
             )
+            time.sleep(3)
 
         summ = _reg_summarize(suite_name, config_name, rows)
         rep = {
