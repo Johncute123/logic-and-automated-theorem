@@ -5,6 +5,52 @@ import os, json, tempfile, textwrap, re, asyncio
 from typing import List, Tuple, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+# Monkey-patch isabelle_client.utils.start_isabelle_server to avoid Cygwin-Isabelle.bat on Windows
+import sys
+import isabelle_client.utils
+
+def _patched_start_isabelle_server(log_file=None, name=None, port=None):
+    import asyncio
+    
+    args = (
+        "server"
+        + (f" -L {log_file}" if log_file is not None else "")
+        + (f" -p {port!s}" if port is not None else "")
+        + (f" -n {name}" if name is not None else "")
+    )
+    
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        except Exception:
+            pass
+
+    async def async_call() -> tuple[str, asyncio.subprocess.Process]:
+        try:
+            isabelle_server = await asyncio.create_subprocess_exec(
+                "isabelle", *(args.split(" ")), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except FileNotFoundError:
+            isabelle_server = await asyncio.create_subprocess_exec(
+                "isabelle.bat", *(args.split(" ")), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            
+        if isabelle_server.stdout is not None:
+            line = (await isabelle_server.stdout.readline()).decode("utf-8", "replace")
+            if not line.strip() and isabelle_server.stderr is not None:
+                err_line = (await isabelle_server.stderr.readline()).decode("utf-8", "replace")
+                if err_line.strip():
+                    raise ValueError(f"Isabelle server failed to start: {err_line}")
+            return line, isabelle_server
+            
+        raise ValueError("No stdout while starting the server.")
+
+    return asyncio.run(async_call())
+
+isabelle_client.utils.start_isabelle_server = _patched_start_isabelle_server
+import isabelle_client
+isabelle_client.start_isabelle_server = _patched_start_isabelle_server
+
 # Re-export these (cli.py and experiments.py import them from here)
 from isabelle_client import start_isabelle_server, get_isabelle_client, IsabelleResponse
 
@@ -248,11 +294,20 @@ def run_theory(
     _last_call_timed_out = False
     sid = normalize_session_id(session_id)
 
-    tmpdir = tempfile.TemporaryDirectory()
+    os.makedirs("tmp", exist_ok=True)
+    tmpdir = tempfile.TemporaryDirectory(dir="tmp")
     try:
         p = os.path.join(tmpdir.name, "Scratch.thy")
         with open(p, "w", encoding="utf-8") as f:
             f.write(theory_text)
+
+        # Convert absolute path to Cygwin-style POSIX path to avoid colon and path issues on Windows
+        abs_path = os.path.abspath(tmpdir.name)
+        if len(abs_path) >= 3 and abs_path[1] == ":" and (abs_path[2] == "\\" or abs_path[2] == "/"):
+            drive = abs_path[0].lower()
+            cyg_dir = "/cygdrive/" + drive + abs_path[2:].replace("\\", "/")
+        else:
+            cyg_dir = abs_path.replace("\\", "/")
 
         # Resolve wall-clock timeout (seconds)
         if timeout_s is None:
@@ -265,7 +320,7 @@ def run_theory(
         if timeout_s > 0:
             # Always enforce a wall-clock timeout (even if native timeouts exist but are ignored).
             with ThreadPoolExecutor(max_workers=1) as ex:
-                fut = ex.submit(_use_theories_call, isabelle, session_id=sid, master_dir=tmpdir.name, timeout_s=timeout_s)
+                fut = ex.submit(_use_theories_call, isabelle, session_id=sid, master_dir=cyg_dir, timeout_s=timeout_s)
                 try:
                     return fut.result(timeout=timeout_s)
                 except FuturesTimeout:
@@ -275,7 +330,7 @@ def run_theory(
                     return []
 
         # No timeout requested → direct call
-        return list(isabelle.use_theories(session_id=sid, theories=["Scratch"], master_dir=tmpdir.name))
+        return list(isabelle.use_theories(session_id=sid, theories=["Scratch"], master_dir=cyg_dir))
     finally:
         tmpdir.cleanup()
 
@@ -301,7 +356,11 @@ def finished_ok(resps: List[IsabelleResponse]) -> Tuple[bool, Dict[str, Any]]:
     last_obj: Dict[str, Any] = {}
 
     for r in (resps or []):
-        if _normalize_type(_get_field(r, ("response_type", "type", "kind", "tag", "name"))) != "FINISHED":
+        rtype = _normalize_type(_get_field(r, ("response_type", "type", "kind", "tag", "name")))
+        if rtype == "ERROR":
+            return False, {"error": "Isabelle error found"}
+            
+        if rtype != "FINISHED":
             continue
         obj = _decode_body_to_dict(_get_field(r, ("response_body", "body", "message", "payload")))
         if not isinstance(obj, dict):

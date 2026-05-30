@@ -10,7 +10,7 @@ from prover.isabelle_api import build_theory, last_print_state_block, run_theory
 _LLM_SUBGOAL_MARK = "[LLM_SUBGOAL]"
 _LLM_SUBGOAL_RAW_MARK = "[LLM_SUBGOAL_RAW]"
 _LLM_VARS_MARK = "[LLM_VARS]"
-_ISA_FAST_TIMEOUT_S = int(os.getenv("ISABELLE_FAST_TIMEOUT_S", "12"))
+_ISA_FAST_TIMEOUT_S = int(os.getenv("ISABELLE_FAST_TIMEOUT_S", "20"))
 _ISA_VERIFY_TIMEOUT_S = int(os.getenv("ISABELLE_VERIFY_TIMEOUT_S", "30"))
 
 # === Isabelle interaction ======================================================
@@ -179,7 +179,7 @@ def _effective_goal_from_state(
     clean = _strip(state_block)
 
     # Extract alpha-renamed subgoal (multi-line safe)
-    renamed_subgoal = _extract_subgoal_from_markers(clean) or ""
+    renamed_subgoal = _extract_subgoal_from_markers(clean) or _subgoal_from_standard_state(clean) or ""
     if not renamed_subgoal:
         return fallback_goal
 
@@ -259,101 +259,122 @@ method_setup llm_print_vars = ‹
     return [prolog.strip()]
 
 
-def _inject_var_extraction(proof_lines: List[str]) -> List[str]:
-    return [*proof_lines, "  apply llm_print_vars"]
+def _offset_to_line(text: str, offset: int) -> int:
+    if offset <= 0:
+        return 0
+    return text.count("\n", 0, offset)
+
+
+_SUBGOAL_NUM_RE = re.compile(r"^\s*(\d+)\.\s+(.*)$", re.M)
+
+
+def _subgoal_from_standard_state(state_block: str) -> Optional[str]:
+    """Fallback: last numbered subgoal from a print_state block."""
+    clean = _strip(state_block)
+    if not clean:
+        return None
+    parts: List[Tuple[int, str]] = []
+    for m in _SUBGOAL_NUM_RE.finditer(clean):
+        parts.append((int(m.group(1)), m.group(2).strip()))
+    if parts:
+        return parts[-1][1]
+    return None
+
+
+def _decode_response_body(body: object) -> Optional[dict]:
+    if body is None:
+        return None
+    if isinstance(body, dict):
+        return body
+    if isinstance(body, (bytes, bytearray)):
+        body = body.decode(errors="replace")
+    if isinstance(body, str):
+        try:
+            data = json.loads(body)
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _marker_lines_from_responses(resps: List) -> List[str]:
+    """Collect [LLM_*] writeln lines from NOTE and FINISHED responses."""
+    out: List[str] = []
+    seen: set[str] = set()
+    marker_tags = (_LLM_SUBGOAL_MARK, _LLM_SUBGOAL_RAW_MARK, _LLM_VARS_MARK, "[LLM_FIXES]", "[LLM_NOSUBGOAL]")
+
+    def _add(text: str) -> None:
+        t = (text or "").strip()
+        if not t or t in seen or t == "[LLM_NOSUBGOAL]":
+            return
+        if any(tag in t for tag in marker_tags):
+            seen.add(t)
+            out.append(t)
+
+    for resp in resps or []:
+        rtype = str(getattr(resp, "response_type", "")).upper()
+        body = _decode_response_body(getattr(resp, "response_body", None))
+        if not body:
+            continue
+        if rtype == "NOTE" and body.get("kind") == "writeln":
+            _add(str(body.get("message", "") or ""))
+            continue
+        if rtype != "FINISHED":
+            continue
+        for node in body.get("nodes", []) or []:
+            for msg in node.get("messages", []) or []:
+                if str(msg.get("kind", "")).lower() == "writeln":
+                    _add(str(msg.get("message", "") or ""))
+    return out
 
 
 def _extract_print_state_from_responses(resps: List) -> str:
+    """Merge standard print_state with custom LLM marker lines."""
     standard = last_print_state_block(resps) or ""
-    llm_lines, debug_writeln_count, debug_llm_found = [], 0, False
+    markers = _marker_lines_from_responses(resps)
+    if markers and standard:
+        return standard + "\n" + "\n".join(markers)
+    return "\n".join(markers) if markers else standard
 
-    for resp in (resps or []):
-        resp_type = str(getattr(resp, "response_type", "")).upper()
-        if resp_type == "NOTE":
-            try:
-                body = json.loads(getattr(resp, "response_body", "") or "{}")
-            except Exception:
-                body = {}
-            if isinstance(body, dict) and body.get("kind") == "writeln":
-                text = str(body.get("message", "") or ""); debug_writeln_count += 1
-                # print(f"[DEBUG writeln #{debug_writeln_count}]: {text[:100]}")
-                if any(m in text for m in (_LLM_SUBGOAL_MARK, _LLM_SUBGOAL_RAW_MARK, _LLM_VARS_MARK, "[LLM_FIXES]", "[LLM_TEST]")):
-                    debug_llm_found = True
-                    # print(f"[DEBUG] *** FOUND LLM MARKER in writeln #{debug_writeln_count}: {text[:150]}")
-                    if text.strip() != "[LLM_NOSUBGOAL]":
-                        llm_lines.append(text)
-                elif ("goal" in text and "subgoal" in text and not standard):
-                    llm_lines.append(text); standard = text
-            continue
 
-        body = getattr(resp, "response_body", None)
-        if isinstance(body, bytes):
-            body = body.decode(errors="replace")
-        try:
-            data = json.loads(body) if isinstance(body, str) and body.strip().startswith("{") else body
-            if not isinstance(data, dict):
-                continue
-        except (json.JSONDecodeError, TypeError):
-            continue
+def _proof_prefix_at_hole(full_text: str, hole_span: Tuple[int, int]) -> List[str]:
+    """Lemma + proof lines up to the hole, with sorry replaced by llm_print_vars."""
+    s, _ = hole_span
+    all_lines = full_text.splitlines()
+    hole_line = _offset_to_line(full_text, s)
+    lemma_start = next((i for i, ln in enumerate(all_lines) if ln.strip().startswith("lemma ")), -1)
+    if lemma_start < 0 or hole_line < lemma_start:
+        return []
 
-        for node in data.get("nodes", []) or []:
-            for msg in node.get("messages", []) or []:
-                kind, text = msg.get("kind"), msg.get("message", "") or ""
-                if kind == "writeln":
-                    debug_writeln_count += 1
-                    # print(f"[DEBUG writeln #{debug_writeln_count}]: {text[:100]}")
-                    if any(m in text for m in (_LLM_SUBGOAL_MARK, _LLM_VARS_MARK, "[LLM_TEST]")):
-                        debug_llm_found = True
-                        # print(f"[DEBUG] *** FOUND LLM MARKER in writeln #{debug_writeln_count}: {text[:150]}")
-                        llm_lines.append(text)
-                    elif ("goal" in text and "subgoal" in text and not standard):
-                        llm_lines.append(text); standard = text
-                elif kind == "error":
-                    benign = (
-                        'Bad context for command "end"' in text
-                        or text.strip().startswith('Undefined fact: "assms"')
-                        or text.strip().startswith('Undefined fact: "set_empty_conv"')
-                    )
-                    if not benign:
-                        print(f"[DEBUG ERROR]: {text[:300]}")
-
-    # print(f"[DEBUG] Total writeln messages: {debug_writeln_count}, LLM markers found: {debug_llm_found}")
-    return (standard + "\n" + "\n".join(llm_lines)) if (llm_lines and standard) else (standard or "\n".join(llm_lines))
+    prefix = list(all_lines[lemma_start : hole_line + 1])
+    if prefix and "sorry" in prefix[-1]:
+        prefix[-1] = re.sub(r"\bsorry\b", "apply llm_print_vars", prefix[-1], count=1)
+    elif prefix:
+        indent = prefix[-1][: len(prefix[-1]) - len(prefix[-1].lstrip(" "))]
+        prefix.append(f"{indent}apply llm_print_vars")
+    return prefix
 
 
 def _print_state_before_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int, int], trace: bool = False) -> str:
-    s, _ = hole_span
-    lines = full_text[:s].rstrip().splitlines()
-    lemma_start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("lemma ")), -1)
-    if lemma_start == -1:
+    proof_lines = _proof_prefix_at_hole(full_text, hole_span)
+    if not proof_lines:
         return ""
 
-    proof_lines = lines[lemma_start:]
     try:
-        thy = build_theory(_build_ml_prolog() + _inject_var_extraction(proof_lines), add_print_state=True, end_with="oops")
-        # if trace:
-        #     print("[DEBUG] Theory text being sent to Isabelle:")
-        #     print("=" * 60)
-        #     for i, ln in enumerate(thy.splitlines()[:30]):
-        #         print(f"{i:3d}: {ln}")
-        #     tl = thy.splitlines()
-        #     if len(tl) > 40:
-        #         print("  …")
-        #         for i, ln in enumerate(tl[-10:], start=len(tl) - 10):
-        #             print(f"{i:3d}: {ln}")
-        #     print("=" * 60)
+        thy_steps = _build_ml_prolog() + proof_lines
+        thy = build_theory(thy_steps, add_print_state=False, end_with=None)
         resps = _run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_FAST_TIMEOUT_S)
         state = _extract_print_state_from_responses(resps)
-        # if trace:
-        #     print(f"[DEBUG] State block contains [LLM_VARS]: {_LLM_VARS_MARK in state}")
         if _looks_truncated(state):
-            thy2 = build_theory(["ML ‹Pretty.setmargin 100000›"] + _build_ml_prolog() + _inject_var_extraction(proof_lines), add_print_state=True, end_with="oops")
+            thy2 = build_theory(["ML ‹Pretty.setmargin 100000›"] + thy_steps, add_print_state=True, end_with=None)
             resps2 = _run_theory_with_timeout(isabelle, session, thy2, timeout_s=_ISA_FAST_TIMEOUT_S)
             state2 = _extract_print_state_from_responses(resps2)
             if state2 and len(state2) > len(state):
                 state = state2
+        if trace and state and _LLM_SUBGOAL_MARK not in state and "subgoal" not in state.lower():
+            print("[fill] Warning: state block has no LLM markers or subgoal text")
         return state
     except Exception as e:
         if trace:
-            print(f"[DEBUG] Exception: {e}")
+            print(f"[fill] state extraction failed: {type(e).__name__}: {e}")
         return ""

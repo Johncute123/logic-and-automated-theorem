@@ -80,12 +80,12 @@ def _fill_one_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int,
     
     res = prove_goal(
         isabelle, session, eff_goal, model_name_or_ensemble=model,
-        beam_w=3, max_depth=6, hint_lemmas=6, timeout=per_hole_timeout,
-        models=None, save_dir=None, use_sledge=True, sledge_timeout=10,
-        sledge_every=1, trace=trace, use_color=False, use_qc=False,
-        qc_timeout=2, qc_every=1, use_np=False, np_timeout=5, np_every=2,
-        facts_limit=8, do_minimize=False, minimize_timeout=8,
-        do_variants=False, variant_timeout=6, variant_tries=24,
+        beam_w=5, max_depth=10, hint_lemmas=8, timeout=per_hole_timeout,
+        models=None, save_dir=None, use_sledge=True, sledge_timeout=15,
+        sledge_every=1, trace=trace, use_color=False, use_qc=True,
+        qc_timeout=3, qc_every=1, use_np=True, np_timeout=5, np_every=2,
+        facts_limit=10, do_minimize=False, minimize_timeout=8,
+        do_variants=True, variant_timeout=10, variant_tries=40,
         enable_reranker=True, initial_state_hint=state_block,
     )
     
@@ -123,11 +123,33 @@ def _fill_one_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int,
     
     # Handle finisher
     if fin:
+        fin_stripped = fin.strip()
+        s, e = hole_span
+        ls = full_text.rfind("\n", 0, s) + 1
+        le = full_text.find("\n", s)
+        hole_line = full_text[ls:(le if le != -1 else len(full_text))]
+        indent = hole_line[: len(hole_line) - len(hole_line.lstrip(" "))]
+
+        # Inside have/show: replace sorry with a single `by ...` / `done` line.
+        head_idx = None
+        scan_start = max(0, full_text.rfind("\n", 0, max(0, ls - 512)) + 1)
+        segment = full_text[scan_start:s]
+        seg_lines = segment.splitlines()
+        for i in range(len(seg_lines) - 1, -1, -1):
+            if _HEAD_CMD_RE.match(seg_lines[i] or ""):
+                head_idx = i
+                break
+
+        if head_idx is not None and (fin_stripped.startswith("by ") or fin_stripped == "done"):
+            new_text = full_text[:s] + indent + fin_stripped + "\n" + full_text[e:]
+            if _verify_full_proof(isabelle, session, new_text):
+                return new_text, True, fin_stripped
+            return full_text, False, "finisher-unverified-have/show"
+
         script_lines = applies + [fin]
         insert = "\n  " + "\n  ".join(script_lines) + "\n"
-        s, e = hole_span
         new_text = full_text[:s] + insert + full_text[e:]
-        
+
         if _verify_full_proof(isabelle, session, new_text):
             return new_text, True, "\n".join(script_lines)
         return full_text, False, "finisher-unverified"
@@ -474,6 +496,52 @@ def plan_and_fill(goal: str, model: Optional[str] = None, timeout: int = 100, *,
         isa, session, proc = isa2, session2, proc2
 
     try:
+        # ------------------------------------------------------------
+        # Fast path: try direct stepwise proving before LLM outline.
+        # This keeps Fill and Repair, but avoids bad outlines for easy goals.
+        # ------------------------------------------------------------
+        try:
+            direct = prove_goal(
+                isa,
+                session,
+                goal,
+                model_name_or_ensemble=model,
+                beam_w=5,
+                max_depth=10,
+                hint_lemmas=8,
+                timeout=min(45, max(15, int(left_s() * 0.4))),
+                models=None,
+                save_dir=None,
+                use_sledge=True,
+                sledge_timeout=15,
+                sledge_every=1,
+                trace=trace,
+                use_color=False,
+                use_qc=True,
+                qc_timeout=3,
+                qc_every=1,
+                use_np=True,
+                np_timeout=5,
+                np_every=2,
+                facts_limit=10,
+                do_minimize=False,
+                minimize_timeout=8,
+                do_variants=True,
+                variant_timeout=10,
+                variant_tries=40,
+                enable_reranker=True,
+            )
+
+            if direct.get("success"):
+                steps = [str(s) for s in direct.get("steps", [])]
+                proof_text = build_theory(steps, add_print_state=False, end_with=None)
+
+                if _verify_full_proof(isa, session, proof_text):
+                    return PlanAndFillResult(True, proof_text, [], [])
+
+        except Exception as ex:
+            if trace:
+                print(f"[planner] direct prover fast path failed: {type(ex).__name__}: {ex}")
         # Generate outline
         if legacy_single_outline:
             full = propose_isar_skeleton(goal, model=model, temp=0.35, force_outline=(mode == "outline")).text

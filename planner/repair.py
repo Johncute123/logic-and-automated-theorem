@@ -42,6 +42,24 @@ def _log(prefix: str, label: str, content: str, trace: bool = True) -> None:
     if trace and content:
         print(f"[{prefix}] {label} (len={len(content)}):\n{content if content.strip() else '  (empty)'}")
 
+_PROSE_LINE_RE = re.compile(
+    r"(?i)^(?:I'll |I will |Here(?:'s| is)|This (?:proof|lemma|outline)|The following|```|<<<|>>>|\- by )"
+)
+_ISAR_LINE_OK_RE = re.compile(
+    r"^\s*(?:apply|by|using|from|with|then|show|have|obtain|assume|fix|proof|qed|done|case|next|sorry|\.)\b"
+    r"|^\s*(?:have|show|obtain)\s+"
+    r"|^\s*\.\s*$"
+)
+
+
+def _normalize_repair_line(line: str) -> str:
+    """Trim common LLM junk on otherwise-valid tactic lines."""
+    s = (line or "").rstrip()
+    s = re.sub(r"\s+-\s*$", "", s)  # `by simp -`
+    s = re.sub(r"\s+-\s+(by\b)", r" \1", s)
+    return s.strip()
+
+
 def _sanitize_llm_block(text: str) -> str:
     if not text:
         return text
@@ -66,7 +84,23 @@ def _sanitize_llm_block(text: str) -> str:
         r"^\s*---\s*$",
     ]
     compiled = [re.compile(p) for p in (patterns + header_patterns)]
-    lines = [l for l in text.splitlines() if not any(p.match(l) for p in compiled)]
+    kept: List[str] = []
+    for raw in text.splitlines():
+        if any(p.match(raw) for p in compiled):
+            continue
+        if _PROSE_LINE_RE.match(raw.strip()):
+            continue
+        if re.match(r"^\s*[\-\*]\s+by\b", raw):
+            continue
+        norm = _normalize_repair_line(raw)
+        if not norm:
+            continue
+        if not _ISAR_LINE_OK_RE.match(norm) and not _HEAD_CMD_RE.match(norm):
+            continue
+        # Preserve original indentation when possible
+        indent = raw[: len(raw) - len(raw.lstrip(" "))]
+        kept.append(indent + norm if norm != raw.strip() else raw.rstrip())
+    lines = kept
 
     # Balance 'proof'/'qed' and cut off any text after the final balanced 'qed'
     balance = 0

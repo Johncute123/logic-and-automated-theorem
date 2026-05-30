@@ -146,22 +146,10 @@ def _quick_state_and_errors(isabelle, session: str, full_text: str) -> Tuple[str
         return "", [{"text": f"extraction_error: {type(e).__name__}"}]
 
 def _print_state_before_hole(isabelle, session: str, full_text: str, hole_span: Tuple[int, int], trace: bool = False) -> str:
-    hole_line, indent, lines = _hole_line_bounds(full_text, hole_span)
-    if not (0 <= hole_line < len(lines) and "sorry" in lines[hole_line]):
-        nearest = _find_first_hole(lines)
-        if nearest is not None:
-            hole_line = nearest
-            indent = len(lines[hole_line]) - len(lines[hole_line].lstrip(" "))
-    pad = " " * max(2, indent)
-    injected = [f"{pad}prefer 1", f"{pad}print_state", f"{pad}(* REPAIR-PRINT-STATE *)"]
-    variant_lines = lines[:hole_line] + injected + lines[hole_line:]
-    variant = "\n".join(variant_lines) + ("\n" if full_text.endswith("\n") else "")
-    try:
-        thy = build_theory(variant.splitlines(), add_print_state=False, end_with=None)
-        resps = _run_theory_with_timeout(isabelle, session, thy, timeout_s=_ISA_FAST_TIMEOUT_S)
-        return _extract_print_state_from_responses(resps)
-    except Exception:
-        return ""
+    """Delegate to planner.goals (ML markers + sorry-at-hole replacement)."""
+    from planner.goals import _print_state_before_hole as _goals_print_state
+
+    return _goals_print_state(isabelle, session, full_text, hole_span, trace=trace)
 
 # ========== Counterexample Hints ==========
 

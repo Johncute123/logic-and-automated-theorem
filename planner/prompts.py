@@ -17,6 +17,10 @@ STRICT RULES
 - When trivial, close with `by simp` / `by auto` / `by blast` / `by fastforce`, etc, but don't use . as a tactic. 
 - Never add "qed" in BLOCK
 - Don't copy text from PROOF_CONTEXT. 
+- TYPE CHECKING & OPERATOR RULES:
+  • Never use list append (`@`) or list Cons (`#`) on sets. Set expressions (like `set xs`) are NOT lists. Combining sets must only use union (`∪`), intersection (`∩`), or insertion (`insert x S`). e.g. write `insert x (set xs)` or `set xs ∪ set ys` NOT `set xs @ ys`.
+  • In conditional expressions `if P then A else B`, both `A` and `B` must have the exact same type. Do not mix list elements (type `'b`) with list types (type `'b list`, e.g. `[]`).
+  • LIST PROPERTIES: Remember that `rev (x # xs) = rev xs @ [x]`. For `take` and `drop`, remember that `take n (x # xs) = (if n = 0 then [] else x # take (n - 1) xs)` and `drop n (x # xs) = (if n = 0 then x # xs else drop (n - 1) xs)`. Do not hallucinate properties.
 
 LIGHT GRAMMAR (allowed shapes)
 <stmt> ::=
@@ -85,6 +89,10 @@ STRICT RULES
 - When trivial, close with `by simp` / `by auto` / `by blast` / `by fastforce`, etc, but don't use . as a tactic. 
 - Don't add "qed" if there isn't an open "proof".
 - Don't copy text from PROOF_CONTEXT. 
+- TYPE CHECKING & OPERATOR RULES:
+  • Never use list append (`@`) or list Cons (`#`) on sets. Set expressions (like `set xs`) are NOT lists. Combining sets must only use union (`∪`), intersection (`∩`), or insertion (`insert x S`). e.g. write `insert x (set xs)` or `set xs ∪ set ys` NOT `set xs @ ys`.
+  • In conditional expressions `if P then A else B`, both `A` and `B` must have the exact same type. Do not mix list elements (type `'b`) with list types (type `'b list`, e.g. `[]`).
+  • LIST PROPERTIES: Remember that `rev (x # xs) = rev xs @ [x]`. For `take` and `drop`, remember that `take n (x # xs) = (if n = 0 then [] else x # take (n - 1) xs)` and `drop n (x # xs) = (if n = 0 then x # xs else drop (n - 1) xs)`. Do not hallucinate properties.
 
 LIGHT GRAMMAR (allowed shapes)
 <stmt> ::=
@@ -169,6 +177,12 @@ HARD OUTPUT RULES
 - When trivial, close with `by simp` / `by auto` / `by blast` / `by fastforce`, etc, but don't use . as a tactic. 
 - Do NOT invent constants or fact names; only use variables/tokens present in the goal or locally introduced facts.
 - Never write unquoted assumptions such as `assume A`; Isabelle propositions must be quoted: `assume "A"`.
+- TYPE CHECKING & OPERATOR RULES:
+  • Never use list append (`@`) or list Cons (`#`) on sets. Set expressions (like `set xs`) are NOT lists. Combining sets must only use union (`∪`), intersection (`∩`), or insertion (`insert x S`). e.g. write `insert x (set xs)` or `set xs ∪ set ys` NOT `set xs @ ys`.
+  • In conditional expressions `if P then A else B`, both `A` and `B` must have the exact same type. Do not mix list elements (type `'b`) with list types (type `'b list`, e.g. `[]`).
+  • LIST PROPERTIES: Remember that `rev (x # xs) = rev xs @ [x]`. For `take` and `drop`, remember that `take n (x # xs) = (if n = 0 then [] else x # take (n - 1) xs)` and `drop n (x # xs) = (if n = 0 then x # xs else drop (n - 1) xs)`. Do not hallucinate properties.
+- PROOF STARTER & IMPLICATION RULES:
+  • If the lemma statement contains implications (`⟶` or `⟹`), you MUST use `proof` or `proof (intro impI)` instead of `proof -`. You must then formally assume the antecedents using quoted `assume` statements, e.g. `assume "A"`.
 
 LIGHT GRAMMAR (allowed shapes)
 lemma "{goal}"
